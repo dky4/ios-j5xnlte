@@ -411,21 +411,38 @@ change.
 
 ## Next verified milestone
 
-1. CI milestone DONE: run 39838687729 (head `aa5ba59`) produced
-   `kernel.development.j5xnlte` in the `xnu-kernel` artifact (verified).
-2. Real-payload trial — the payload and boot image are already built:
+1. CI milestone DONE (marker fix): run 39847270182 (head `d128e08`)
+   succeeded and produced `kernel.development.j5xnlte` in the `xnu-kernel`
+   artifact (17,051,920 bytes, sha256 `cf5d866479811d60c67d45744eec7a1740203fbe6d28bc55da1864b82125d3f9`),
+   verified: Mach-O 0xfeedfacf, cputype 0x100000c (arm64), `__TEXT` at
+   `0xfffffff007004000` (compact 0193 link address), 10 kernel segments,
+   LC_UNIXTHREAD entry `0xfffffff007425488`, kernel_end `0xfffffff0080a4000`
+   (page aligned), no LC_DYLD_CHAINED_FIXUPS (static link, fixups walked).
+2. Real-payload trial — the payload and boot image are re-packed with the
+   marker-fix kernel:
    - `/tmp/opencode/payload-xnu-j5xnlte.bin`: SWEETXNU payload,
-     virt_base `0xfffffff006000000`, entry `0xfffffff007423488`,
-     kernel_end `0xfffffff0080a0000`, 10 segments, 16,452,416 bytes,
+     virt_base `0xfffffff006000000`, entry `0xfffffff007425488`,
+     kernel_end `0xfffffff0080a4000`, 10 segments, 16,469,088 bytes,
      phys_base/mem_size from the ADT (`0x88000000`/`0x78000000`).
-   - `shim/j5xnlte/out/j5xnlte-boot.img` (16,494,592 bytes): lk2nd
-     loader + the payload as ramdisk + the minimal DTB, boot.img v0.
+   - `shim/j5xnlte/out/j5xnlte-boot.img` (16,510,976 bytes): lk2nd
+     loader + the payload as ramdisk + the minimal DTB, boot.img v0,
+     cmdline `lk2nd.pass-simplefb` (re-verified: ramdisk_size 16,469,088,
+     kernel_addr 0x8000).
    - Trial: `fastboot boot shim/j5xnlte/out/j5xnlte-boot.img`, then read
      the IMEM word via `fastboot oem debug readl 0x0860065c` — expect
      `0x584e5531` ("XNU1") once XNU reaches the marker write site (the
      loader's `0x4a355800` appears if XNU wedges before its own marker);
      `fastboot reboot` restores Android (nothing is written).
-3. Then: MDP5+DSI console bring-up (the J5 branch in `sweet_early.c` is a
+3. Display probe (DIAG=2, committed `0d8e806`): re-pack with
+   `DIAG=2 sh shim/j5xnlte/build.sh /tmp/opencode/payload-xnu-j5xnlte.bin`
+   — wait, DIAG=2 replaces the loader with the display probe, so its
+   ramdisk still needs the valid payload (any payload works: the probe
+   only reads the DTB). Trial: boot, then read IMEM words `0x0860065c`
+   (fb base), `0x660` (fb size), `0x664` (width), `0x668` (height), `0x66c`
+   (stride), `0x670` (format ASCII) — or `0x4a355801` = node missing.
+   Host round-trip verified: `fdt_chosen_fb` parses the geometry and
+   format correctly.
+4. Then: MDP5+DSI console bring-up (the J5 branch in `sweet_early.c` is a
    no-op until the framebuffer exists), eMMC/SDHCI for the rootfs, and the
    smc-only PSCI probe before relying on PSCI for XNU's secondary cores.
 
@@ -468,3 +485,21 @@ change.
   `0x584e5531` = XNU reached its marker write site; `0x4a355800|stage` =
   loader stage (XNU wedged before its marker); Android reboot = the
   address still faults (lost trial, report it).
+- **Display research (lk2nd source, no device test yet):** the installed
+  lk2nd links the cont-splash display (MDP5 pipe detection of the Samsung
+  bootchain's splash: base/stride/size/format read from the already-set-up
+  pipes, gated on MDP GDSC) AND the simplefb module (`lk2nd.pass-simplefb`
+  string confirmed in lk2nd.img). On booting an OS whose final cmdline
+  contains `lk2nd.pass-simplefb` (boot_type ARM64 only — BOOT_DOWNSTREAM/
+  BOOT_LK2ND skip; our minimal DTB has no `/soc/qcom,ion` and our cmdline
+  is not `lk2nd`, so our `fastboot boot` path does not skip), lk2nd
+  publishes `/chosen/simple-framebuffer` (reg, width, height, stride,
+  format "x8r8g8b8"/"r5g6b5"/"r8g8b8", memory-region, status) and
+  `/reserved-memory/cont-splash@<base>` (no-map). `update_cmdline` copies
+  the bootimg cmdline first (aboot.c:801), so mkbootimg `--cmdline
+  lk2nd.pass-simplefb` reaches the scan. The shim can read that node from
+  its DTB (x0) and fill XNU's boot_args Video — display without any MDP5
+  work. Whether lk2nd actually detects a splash on this board (panel
+  initialized by the stock bootchain) is device evidence; a DIAG probe can
+  write the fb facts (base/width/height/stride) into IMEM words at
+  `0x0860065c`+ and read them back per-word.
