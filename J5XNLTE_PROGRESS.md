@@ -335,6 +335,21 @@ change.
   donor's proven view (no TARGET_OS_OSX via cc_config).
 - **Push-triggered CI run (head `aa5ba59`) queued.**
 
+## 2026-10-22 — MILESTONE: CI produces a real J5XNLTE kernel (run 39838687729)
+
+- **Push run (head `aa5ba59`) succeeded.** The `xnu-kernel` artifact
+  contains `kernel.development.j5xnlte` (17,035,240 bytes, sha256
+  `3066ea1be75f3193653c4c2b6d4cca818eea574fc94a227c9efc7f069e74d5c8`)
+  with the `.link` map and `SHA256SUMS`.
+- **Verified build-success claims only** (no device claim): Mach-O
+  0xfeedfacf, cputype 0x100000c (arm64), filetype 2 (MH_EXECUTE),
+  `__TEXT` at `0xfffffff007004000` — the compact link address from the
+  0193 override applies — entry `LC_UNIXTHREAD pc 0xfffffff007423488`
+  (inside `__TEXT_EXEC` `0xfffffff00725c000`), 26 load commands,
+  `kernel_end` after `__LINKEDIT` → `0xfffffff0080a0000`.
+- Not yet verified on the phone: payload boot, XNU marker, screen output,
+  any iOS runtime behavior.
+
 ## Open device-test questions
 
 - Does lk2nd hand off a usable framebuffer (address/stride), and when?
@@ -351,14 +366,11 @@ change.
 
 ## Next verified milestone
 
-1. Check the push-triggered CI run for head `aa5ba59` (0019 EXTERNAL_HEADERS
-   TargetConditionals revert; the kernel link already reached with one
-   undefined symbol). `MACHINE_CONFIG=J5XNLTE`. Check the run and the
-   `xnu-kernel` artifact via GitHub web (`gh` is not installed).
-2. Once a kernel artifact exists: pack a real payload with
-   `tools/mkpayload.py` + `tools/mkadt_j5xnlte.py` and run the first
-   `fastboot boot` trial of a real kernel payload. The IMEM word at
-   `0x146bf65c` should read `0x584e5531` ("XNU1") via
+1. CI milestone DONE: run 39838687729 (head `aa5ba59`) produced
+   `kernel.development.j5xnlte` in the `xnu-kernel` artifact (verified).
+2. Pack a real payload with `tools/mkpayload.py` + `tools/mkadt_j5xnlte.py`
+   and run the first `fastboot boot` trial of a real kernel payload. The
+   IMEM word at `0x146bf65c` should read `0x584e5531` ("XNU1") via
    `fastboot oem debug readl 0x146bf65c` — distinct from the shim's
    "J5X" stage markers.
 3. Then: MDP5+DSI console bring-up (the J5 branch in `sweet_early.c` is a
