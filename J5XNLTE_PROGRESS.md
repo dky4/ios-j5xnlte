@@ -305,6 +305,36 @@ change.
   `Makefile.template` filters extended with J5XNLTE.
 - **Push-triggered CI run (head `0c854eb`) queued.**
 
+## 2026-10-22 — CI run 39835622476 diagnosis (kernel link reached, one undefined symbol)
+
+- **Push run 7 (head `0c854eb`, job 120023848585) fixed all run-39833368443
+  groups** (no inner.h, no cp_*/AppleKeyStore, no kern_internal.h errors)
+  and **reached the kernel link** (`LD kernel.development.j5xnlte.unstripped`)
+  with exactly **one undefined symbol**:
+  ```
+  Undefined symbols for architecture arm64:
+    "_iBoot_Stage_2_version", referenced from:
+        _SavePanicInfo in model_dep.o
+  ```
+- **Root cause:** the run-39829694147 fix (0019) staged the SDK
+  `TargetConditionals.h` into `EXTERNAL_HEADERS/` as a global copy.
+  `EXTERNAL_HEADERS/EXTERNAL_HEADERS/corecrypto/cc_config.h` uses
+  `#if __has_include(<TargetConditionals.h>)`, so the global copy made
+  `TARGET_OS_OSX` visible to kernel-private compiles (via
+  model_dep.c → crypto.h → corecrypto → cc_config.h). model_dep.c's
+  `#if defined(TARGET_OS_OSX) && defined(__arm64__)` then became TRUE and
+  pulled the extern for `iBoot_Stage_2_version`, which is never defined in
+  the tree (the donor builds keep TargetConditionals.h off the kernel
+  include paths, so that gate stays FALSE and links clean).
+- **Fix (committed `aa5ba59`):** reverted the global EXTERNAL_HEADERS copy
+  from `0019-stage-libpthread.sh`. The pthread TargetConditionals
+  not-found error from run 5 is properly fixed by 0193's
+  `SWEET_PTHREAD_INC` machine-config filter extension (the pthread
+  compiles find the staged copy via `-I$(SWEET_PTHREAD_ROOT)`); the
+  global copy was redundant and harmful. Kernel compiles return to the
+  donor's proven view (no TARGET_OS_OSX via cc_config).
+- **Push-triggered CI run (head `aa5ba59`) queued.**
+
 ## Open device-test questions
 
 - Does lk2nd hand off a usable framebuffer (address/stride), and when?
@@ -321,10 +351,10 @@ change.
 
 ## Next verified milestone
 
-1. Check the push-triggered CI run for head `0c854eb` (the 0193 build-gate
-   patch: compact VA override + Makefile.template machine-config filters).
-   `MACHINE_CONFIG=J5XNLTE`. Check the run and the `xnu-kernel` artifact
-   via GitHub web (`gh` is not installed).
+1. Check the push-triggered CI run for head `aa5ba59` (0019 EXTERNAL_HEADERS
+   TargetConditionals revert; the kernel link already reached with one
+   undefined symbol). `MACHINE_CONFIG=J5XNLTE`. Check the run and the
+   `xnu-kernel` artifact via GitHub web (`gh` is not installed).
 2. Once a kernel artifact exists: pack a real payload with
    `tools/mkpayload.py` + `tools/mkadt_j5xnlte.py` and run the first
    `fastboot boot` trial of a real kernel payload. The IMEM word at
