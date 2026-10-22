@@ -65,9 +65,10 @@ PY
 # the provider so local compiles from the uploaded build tree work as well.
 pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
 cp "$pthread_sdk/usr/include/TargetConditionals.h" bsd/pthread/sweet_libpthread/
-# The kext-flavoured bsd/pthread compiles include EXPORT_HDRS osfmk/kern/debug.h,
-# whose public flavor pulls <TargetConditionals.h> under -nostdinc (run
-# 39829694148: fatal error 'TargetConditionals.h' file not found in
-# sweet_pthread_init.o). EXTERNAL_HEADERS is already on those include paths.
-cp "$pthread_sdk/usr/include/TargetConditionals.h" EXTERNAL_HEADERS/
+# Do NOT stage TargetConditionals.h into EXTERNAL_HEADERS/ (run
+# 39835622476): corecrypto's cc_config.h uses __has_include, so a global
+# copy makes TARGET_OS_OSX visible to kernel-private compiles and
+# model_dep.c pulls the never-defined iBoot_Stage_2_version. The pthread
+# compiles find this copy via -I$(SWEET_PTHREAD_ROOT) (see
+# bsd/conf/Makefile.template), which is now extended to J5XNLTE (0193).
 echo "Staged libpthread-514.100.2 ($pthread_sha) for ${MACHINE_CONFIG}"
