@@ -267,6 +267,44 @@ change.
     blocker.
 - **Push-triggered CI run 39833368443 (head `719307c`) queued.**
 
+## 2026-10-22 — CI run 39833368443 diagnosis (build-tree machine-config gates)
+
+- **Push run 6 (head `719307c`, job 120015176587) confirmed all five
+  run-39829694147 groups fixed** (pmap assert, commpage LSE,
+  TargetConditionals, BearSSL and HFS staging) and reached real compiles
+  of the staged sources with **new groups, all build-tree gates missing
+  J5XNLTE** (complete list):
+  1. BearSSL `inner.h` not found (14×) — `libkern/conf/Makefile.template`
+     sets `SWEET_AES_INC` behind `filter $(CURRENT_MACHINE_CONFIG),SWEET
+     A5XELTE` only, so the objects compiled without the
+     `-I.../sweet_bearssl/{inc,src}` paths.
+  2. HFS `cp_handle_vnop`/`CP_WRITE_ACCESS`/`ubc_create_upl`/`io_params`
+     undeclared and `AppleKeyStore/AppleKeyStoreFSServices.h` not found —
+     `bsd/conf/Makefile.template` gates the `sweet_hfs_compat.h`
+     force-include and the `-I$(SWEET_HFS_ROOT)/core` paths behind the
+     same filter. With the compat header missing, the kernel's
+     `-DCONFIG_PROTECT` leaked into the HFS build and pulled the closed
+     AppleKeyStore header (which is gated off on the CI macOS SDK, where
+     `TARGET_OS_IPHONE` is 0).
+  3. pthread provider `kern/kern_internal.h` not found — the same filter
+     hides `SWEET_PTHREAD_INC`.
+  4. **Caught statically before it could fail on the device:**
+     `makedefs/MakeInc.def` has the a5xelte compact kernel VA override
+     (`-UARM_LARGE_MEMORY`, PLKSEG/LINK `0xfffffff004004000`/
+     `0xfffffff007004000`, mirroring device-proven donor patch 0093)
+     behind `ifeq ($(CURRENT_MACHINE_CONFIG),A5XELTE)` only. The CI build
+     sets `PLATFORM=MacOSX` from the SDK, which re-applies
+     `-DARM_LARGE_MEMORY=1` and the -2 TiB link address — outside the
+     A53's TTBR1 39-bit range. `docs/j5xnlte-migration-map.md` says the
+     compact VA layout reuses for the J5. No J5 patch mirrored 0093, so
+     the kernel would have linked at an unmappable address and failed at
+     the first device trial.
+- **Fixes (committed `0c854eb`):** `0193-j5xnlte-build-gates.patch` —
+  `MakeInc.def` ifeq extended to `ifneq ($(filter
+  $(CURRENT_MACHINE_CONFIG),A5XELTE J5XNLTE),)` (compact VA), and both
+  `Makefile.template` filters extended with J5XNLTE.
+- **Push-triggered CI run (head `0c854eb`) queued.**
+
 ## Open device-test questions
 
 - Does lk2nd hand off a usable framebuffer (address/stride), and when?
@@ -283,10 +321,10 @@ change.
 
 ## Next verified milestone
 
-1. Check the push-triggered CI run 39833368443 (head `719307c`,
-   `MACHINE_CONFIG=J5XNLTE`; the 0192 VA/commpage patch and the
-   0019/0020/0026 staging extensions are committed). Check the run and the
-   `xnu-kernel` artifact via GitHub web (`gh` is not installed).
+1. Check the push-triggered CI run for head `0c854eb` (the 0193 build-gate
+   patch: compact VA override + Makefile.template machine-config filters).
+   `MACHINE_CONFIG=J5XNLTE`. Check the run and the `xnu-kernel` artifact
+   via GitHub web (`gh` is not installed).
 2. Once a kernel artifact exists: pack a real payload with
    `tools/mkpayload.py` + `tools/mkadt_j5xnlte.py` and run the first
    `fastboot boot` trial of a real kernel payload. The IMEM word at
