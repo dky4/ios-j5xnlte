@@ -6,7 +6,7 @@ Qualcomm MSM8916). `NOTES.md` and `A5XELTE_PROGRESS.md` are donor histories
 phone, and a working iOS feature are different milestones. See
 `docs/j5xnlte-bringup.md` and `docs/j5xnlte-migration-map.md`.
 
-## 2026-10-22 — port setup and research facts (no device work yet)
+## 2026-10-22 — port setup and research facts
 
 - **Device research (web sources, not device evidence):** the SM-J510FN is a
   Qualcomm MSM8916 (Snapdragon 410) device: 4x Cortex-A53 @ 1.2 GHz, GIC-400
@@ -56,15 +56,87 @@ phone, and a working iOS feature are different milestones. See
   tree is needed on another machine), nothing has been booted, and no phone
   was attached this session.
 
+## 2026-10-22 — first device trials: lk2nd fastboot boot chain proven
+
+Four `fastboot boot` trials on the phone (lk2nd fastboot, entered with
+Vol-Down; the phone was attached over ADB this session). All trials were
+temporary boots — no BOOT-partition write, no flash write, no storage
+change.
+
+- **Trial 1 — full shim, empty-cpio ramdisk (unfixed build):** lk2nd failed
+  the boot with `remote: 'dtb not found'`: header_version 0 without a DTB
+  in the boot image is rejected. **Device finding: lk2nd's `fastboot boot`
+  requires a DTB** (its `copy_dtb()` only parses legacy qcdt tables and the
+  bootimg v2 `--dtb` field is ignored).
+- **Trial 2 — bootimg v2 with `--dtb`:** still `remote: 'dtb not found'`.
+  **Device finding: the v2 `--dtb` field is ignored** by lk2nd's
+  `cmd_boot`; the working path is a DTB **appended to the kernel** with the
+  u32 offset published at header `0x2C` (`dev_tree_appended()`, lk2nd's
+  `DTB_OFFSET`). Verified against lk2nd's source (cloned shallow to a
+  private /tmp path, not committed): for msm8916 lk2nd forces kernel →
+  `0x80000000`, DTB → `0x81e00000`, ramdisk → `0x82000000`
+  (`ABOOT_FORCE_*`, `MEMBASE` `0x8F600000`), patches `/chosen`
+  (cmdline, kaslr-seed, `linux,initrd-start/end`) and enters arm64 images
+  through the TZ milestone call (`scm_elexec_call`: EL1, x0 = DTB, MMU
+  off). If `update_device_tree` fails, lk2nd does `ASSERT(0)` and wedges
+  itself — that failure wedges permanently.
+- **Trial 3 — fixed build (appended DTB, header v0), full shim:** boot
+  accepted (`Booting OKAY`), then the phone wedged (no fastboot, adb or
+  download mode; needed a power-cycle). Diagnosed afterwards in lk2nd's
+  source + shim bisection.
+- **Trial 4 — `DIAG=1` PSCI probe (marker to IMEM `0x146bf65c`, 3 s delay,
+  PSCI `SYSTEM_RESET` `smc #0`→`hvc #0`):** wedged the same way. **Device
+  finding: PSCI from the TZ-milestone EL1 state wedges** (the delay elapsed
+  and no reset happened).
+- **Trial 5 — `DIAG=1` entry probe (marker, then `PS_HOLD` `0x4ab000` = 0):**
+  **the phone properly powered OFF ~1 s after the boot.** **Device finding:
+  the whole chain runs** — lk2nd boot, TZ milestone entry at EL1, start.S,
+  the IMEM marker write, and the PS_HOLD store all executed.
+- **Trial 6 — full shim with the PS_HOLD powerdown reset, empty-cpio
+  ramdisk:** **the phone powered off ~10 s after the boot — the designed
+  stage-2 timing.** This proves end-to-end: the appended DTB passed lk2nd's
+  `update_device_tree`, `/chosen` contained the patched
+  `linux,initrd-start/end` (the initrd was found and bounds-checked), the
+  payload magic check failed as expected on the cpio ramdisk (stage 2), the
+  `CNTFRQ`/`CNTPCT` 10 s delay was accurate at EL1, and the PS_HOLD
+  powerdown is a working, safe reset.
+- **More device findings:**
+  - IMEM `0x146bf800` (the original marker word) wedged the first probe —
+    an unproven word, possibly secure-only. The marker now lives at
+    `0x146bf65c`, lk2nd's `RESTART_REASON_ADDR`, device-proven writable at
+    this context.
+  - The PM8916 default PSHOLD action is powerdown: `PS_HOLD = 0` at
+    `0x4ab000` needs no SPMI setup and is the proven reset. lk2nd's own
+    warm reset needs SPMI (`pm8x41_reset_configure(PON_PSHOLD_WARM_RESET)`)
+    — later work if a warm reset (readable marker) is wanted.
+  - While fastboot is alive, lk2nd peeks/pokes memory: `fastboot oem debug
+    readl 0x146bf65c`; `fastboot oem log` stages lk2nd's log.
+  - The phone auto-boots to Android while charging after a powerdown
+    (charging boot); power press boots it normally.
+- **Fixes in the shim:** appended `dtb.dts` (8-aligned) with the offset at
+  header `0x2C`, header_version 0, IMEM marker moved to `0x146bf65c`,
+  `PS_HOLD` powerdown as the failure reset (PSCI kept out of the path),
+  `DIAG=1` entry-probe build, and doc updates (the boot-image layout and
+  device findings are in `shim/j5xnlte/README.md` and
+  `docs/j5xnlte-bringup.md`).
+- **No XNU claims:** these trials prove the lk2nd → shim chain and the
+  failure/reset observables only. No XNU patch has been cut yet (the
+  `research/bt28/xnu` tree is needed on another machine), no valid payload
+  has been booted, and the screen is unproven.
+
 ## Open device-test questions
 
 - Does lk2nd hand off a usable framebuffer (address/stride), and when?
-- PSCI conduit under this lk2nd: `smc` (Samsung TZ) or `hvc` (lk2nd)?
 - Virtual timer INTID (20 expected from the DT) and `CNTFRQ_EL0` (19.2 MHz
-  expected) measured from EL1.
-- Ramdisk presence and address in `/chosen` after `fastboot boot`.
-- Whether the stock Samsung bootloader reacts badly to the unknown IMEM
-  marker at `0x146bf800` (expected: ignored → normal boot).
+  expected) read back from EL1 — the shim's delay worked, but the exact
+  values were not measured.
+- Whether `PSCI SYSTEM_RESET` via `smc #0` alone (without the `hvc`
+  fallback) works, or whether the HVC fallback wedges: retry with a
+  dedicated probe before relying on PSCI elsewhere (e.g. `CPU_ON` for XNU's
+  secondary cores).
+- Ramdisk address in `/chosen` read back from EL1 (the full shim found it;
+  the exact address is unmeasured — lk2nd's forced addresses put it at
+  `0x82000000`).
 
 ## Next verified milestone
 
@@ -72,5 +144,6 @@ Cut the first XNU patches (J5XNLTE entry marker mirroring a5xelte `0082`,
 board target mirroring `0085`, GICv2/timer mirroring `0086`/`0099` with
 virtual-timer-intid 20 and 4-core topology), build them in CI with
 `machine_config: J5XNLTE`, pack a payload with `tools/mkpayload.py` +
-`tools/mkadt_j5xnlte.py`, and run the first `fastboot boot` trial of
-`shim/j5xnlte/out/j5xnlte-boot.img`.
+`tools/mkadt_j5xnlte.py`, and run the first `fastboot boot` trial of a real
+payload: the shim should pass every validation (the cpio diagnostic proved
+the stage-2 path) and jump to XNU's entry point.

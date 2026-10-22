@@ -11,14 +11,17 @@
  * caches off, x0 = boot_args (physical).
  *
  * There is no console: a failure writes its stage number to IMEM at
- * 0x146bf800 (0x4a355800 | stage, "J5XN" + stage), waits stage * 5 seconds
- * and resets with PSCI; the reboot delay is the first observable. See
- * docs/j5xnlte-bringup.md.
+ * 0x146bf65c (0x4a355800 | stage, "J5XN" + stage), waits stage * 5 seconds
+ * and resets; the reboot delay is the first observable. The marker word is
+ * lk2nd's RESTART_REASON_ADDR (MSM_SHARED_IMEM_BASE+0x65C), which lk2nd
+ * itself writes from the same TZ-milestone EL1 context, so it is proven
+ * NS-writable; the original 0x146bf800 word wedged the first diagnostic
+ * boot. See docs/j5xnlte-bringup.md.
  */
 #include <stdint.h>
 #include "../fdt.h"
 
-#define IMEM_MARK		0x146bf800UL	/* imem@146bf000, unused word */
+#define IMEM_MARK		0x146bf65cUL	/* RESTART_REASON_ADDR: imem@146bf000 + 0x65c */
 #define RAM_BASE		0x80000000UL	/* DRAM start */
 #define RAM_END			0x100000000UL	/* 2 GiB */
 #define PAGE_SIZE		4096UL
@@ -59,6 +62,7 @@ _Static_assert(__builtin_offsetof(struct boot_args, Video) == 40, "boot_args lay
 _Static_assert(__builtin_offsetof(struct boot_args, CommandLine) == 108, "boot_args layout");
 _Static_assert(sizeof(struct boot_args) == 736, "boot_args layout");
 
+#ifndef J5XNLTE_DIAG
 /* MMU off: everything is Device memory, so copy in aligned 8-byte words. */
 static void copy64(uintptr_t dst, uintptr_t src, uint64_t n)
 {
@@ -104,6 +108,24 @@ static void delay(unsigned s)
 		__asm__ volatile("nop");
 }
 
+/* Reset: drop PS_HOLD (0x4ab000). The PM8916 default PSHOLD action powers
+ * the phone off; this is device-proven (DIAG=1 entry probe) and needs no
+ * timers or PSCI. PSCI SYSTEM_RESET from the TZ-milestone EL1 state wedged
+ * a dedicated probe (stage markers + delay elapsed, then no powerdown), so
+ * it stays out of the reset path. lk2nd itself resets through the PMIC
+ * PSHOLD warm-reset path, which needs SPMI (pm8x41_reset_configure); a
+ * warm reset would keep the IMEM marker readable via lk2nd's
+ * `fastboot oem debug readl 0x146bf65c` and is later work if needed. */
+static void __attribute__((noreturn)) fail_reset(void)
+{
+	*(volatile uint32_t *)0x004ab000UL = 0;
+	__asm__ volatile("dsb sy" ::: "memory");
+	for (;;)
+		__asm__ volatile("wfe");
+}
+#endif /* !J5XNLTE_DIAG */
+
+#ifndef J5XNLTE_DIAG
 static void __attribute__((noreturn)) fail(int stage)
 {
 	/* IMEM keeps the marker across the warm reset; the stage number is
@@ -111,15 +133,31 @@ static void __attribute__((noreturn)) fail(int stage)
 	*(volatile uint32_t *)IMEM_MARK = 0x4a355800u | (uint32_t)stage;
 	__asm__ volatile("dsb sy" ::: "memory");
 	delay(stage * 5);
-	/* lk2nd provides PSCI where the stock firmware lacks it; the conduit
-	 * (smc or hvc) is an open device-test question, so try both. */
-	register uint64_t x0 __asm__("x0") = PSCI_SYSTEM_RESET;
-	__asm__ volatile("smc #0" : "+r"(x0) :: "memory");
-	__asm__ volatile("hvc #0" : "+r"(x0) :: "memory");
+	fail_reset();
+}
+#endif /* !J5XNLTE_DIAG */
+
+#ifdef J5XNLTE_DIAG
+/*
+ * Diagnostic build (DIAG=1): entry probe only. Writes the stage-1 marker
+ * to the restart-reason word, then drops PS_HOLD (0x4ab000): the PM8916
+ * default PSHOLD action powers the phone off. Observable: the phone turns
+ * OFF ~1 s after `fastboot boot` (the shim runs; PSCI, timers and IMEM
+ * are all fine) or wedges (the shim never started: entry or the TZ
+ * milestone call failed). No timers, no PSCI, no SPMI needed.
+ */
+void __attribute__((noreturn)) shim_main(uintptr_t dtb)
+{
+	(void)dtb;
+	*(volatile uint32_t *)IMEM_MARK = 0x4a355800u | 1u;
+	__asm__ volatile("dsb sy" ::: "memory");
+	/* MPM2_MPM_PS_HOLD (target/msm8916 iomap): low = PMIC powerdown. */
+	*(volatile uint32_t *)0x004ab000UL = 0;
+	__asm__ volatile("dsb sy" ::: "memory");
 	for (;;)
 		__asm__ volatile("wfe");
 }
-
+#else
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
 /* Boot the SWEETXNU payload found in the lk2nd ramdisk; never returns.
@@ -207,3 +245,4 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 	for (;;)
 		__asm__ volatile("wfe");
 }
+#endif

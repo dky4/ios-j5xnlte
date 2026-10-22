@@ -38,11 +38,31 @@ they are treated as device facts; record those confirmations in
 3. Trials use `fastboot boot out/j5xnlte-boot.img` from `shim/j5xnlte/`.
    Never `fastboot flash boot`: that writes over the 512 KiB-offset boot slot.
    Never use the Samsung bootchain, TWRP or `shim/a5xelte/build-xnu-boot.sh`.
-4. lk2nd enters the booted image at EL1, MMU and D-cache off, x0 = lk2nd's own
-   DTB (arm64 Linux boot protocol). The boot image's ramdisk (the SWEETXNU
+4. lk2nd enters the booted image at EL1, MMU and D-cache off, x0 = the boot
+   image's appended DTB copy at `0x81e00000` (lk2nd's arm64 entry goes
+   through the TZ milestone call `scm_elexec_call`: `el1_x0` = DTB,
+   `el1_elr` = entry, under the stock Samsung TrustZone firmware). The boot
+   image must contain a DTB (see below), and its ramdisk (the SWEETXNU
    payload, `tools/mkpayload.py`) is published through `/chosen
-   linux,initrd-start/end`. The payload's `phys_base`/`mem_size` come from the
-   ADT's `/chosen dram-base/dram-size` (`tools/mkadt_j5xnlte.py`).
+   linux,initrd-start/end`. The payload's `phys_base`/`mem_size` come from
+   the ADT's `/chosen dram-base/dram-size` (`tools/mkadt_j5xnlte.py`).
+
+### lk2nd DTB requirement (device finding, 2026-10-22)
+
+lk2nd's `fastboot boot` fails with `remote: 'dtb not found'` unless it
+finds a DTB in the received image: its `copy_dtb()` only parses legacy
+qcdt dt.img tables and the bootimg v2 `--dtb` field is ignored. The
+working path is `dev_tree_appended()` — it reads a u32 DTB offset at
+kernel+`0x2C` (reserved `res3` in the arm64 header), accepts a single
+non-skales DTB at exactly that offset, copies it to `0x81e00000`, patches
+`/chosen` (cmdline, kaslr-seed, `linux,initrd-start/end`) and passes it in
+x0. `build.sh` appends `dtb.dts` (8-aligned) to the Image and publishes
+the offset at `0x2C`; header version 0 (`dt_size` = 0) skips lk2nd's bogus
+qcdt-table parse cleanly. lk2nd's `update_device_tree` requires `/memory`
+and `/chosen` nodes in the passed DTB and pads the DTB in place with
+`fdt_open_into` (`DTB_PAD_SIZE` 1024 + cmdline_len). The DTB also must not
+overlap lk2nd's own memory: lk2nd runs near the top of RAM (`MEMBASE`
+`0x8F600000`), above the payload's kernel window.
 
 ### Diagnostics without a console
 
@@ -50,29 +70,55 @@ The J5 shim has no console: whether lk2nd leaves a usable framebuffer is an
 open device-test question. Until a display path exists:
 
 - **Loader failure** (before the jump): the shim writes the stage number to
-  IMEM at `0x146bf800` (`0x4a355800 | stage`, "J5XN" + stage; an unknown
-  restart reason is ignored by the stock bootloader), waits `stage * 5`
-  seconds and resets with PSCI. The observable is the reboot delay: ~5 s per
-  failure stage (see `shim/j5xnlte/README.md` for the stage table).
-- **Loader success**: the shim jumps to XNU. A wedge, a reboot into Android
-  without a delay, or anything else on screen is then XNU-owned evidence.
+  IMEM at `0x146bf65c` (`0x4a355800 | stage`, "J5XN" + stage; lk2nd's
+  `RESTART_REASON_ADDR`, device-proven NS-writable at this context), waits
+  `stage * 5` seconds and drops `PS_HOLD` (`0x4ab000`) — the PM8916 default
+  PSHOLD action powers the phone off. The observable is the powerdown
+  delay: ~5 s per failure stage (see `shim/j5xnlte/README.md` for the stage
+  table); the phone boots back on a power press (it auto-boots while
+  charging).
+- **Loader success**: the shim jumps to XNU. A wedge, a powerdown without a
+  delay, or anything else on screen is then XNU-owned evidence.
 - **lk2nd's own log** (not XNU's): `fastboot oem log && fastboot get_staged
   OUT`.
+- **lk2nd peek/poke** (while fastboot is alive): `fastboot oem debug readl
+  0x146bf65c` reads the restart-reason word; once the PMIC warm-reset path
+  (SPMI, `pm8x41_reset_configure(PON_PSHOLD_WARM_RESET)`) is implemented, a
+  warm reset keeps the marker readable.
 - Later options once XNU runs: a screen console from the MDP5 bring-up, then
   a persistent-log partition or USB.
+
+### Device findings (2026-10-22, first trials)
+
+- lk2nd `fastboot boot` accepted the appended-DTB image; four boots total:
+  two identical wedges (unproven IMEM word + PSCI reset), the PSCI probe,
+  the entry/PS_HOLD probe (phone properly powered off), and the full shim
+  powering off at ~10 s — the stage-2 timing as designed.
+- `PSCI SYSTEM_RESET` (`smc #0` `0x84000009`, then `hvc #0`) from the
+  TZ-milestone EL1 state wedges the phone (delay elapsed, then no
+  powerdown); it stays out of the reset path. PS_HOLD powerdown is the
+  proven reset.
+- IMEM `0x146bf800` (the original marker word) wedged the first probe —
+  an unproven word, possibly secure-only; `0x146bf65c` (lk2nd's own
+  restart-reason word) is proven writable.
+- Timer reads work at EL1: the full shim's 10 s `CNTFRQ`/`CNTPCT` delay
+  was accurate (no fallback needed).
 
 ## Open device-test questions
 
 - Does lk2nd hand off a usable framebuffer, and at which address/stride?
-- Which PSCI conduit does this lk2nd provide — `smc` (Samsung TZ) or `hvc`
-  (lk2nd-resident)? The shim tries `smc` then `hvc` for SYSTEM_RESET.
 - Virtual timer INTID: 20 expected from the DT (sm7150 uses 19); measure from
   EL1 before relying on it.
-- `CNTFRQ_EL0` value (19.2 MHz expected from the DT; the a5xelte probe
-  measured 0 on its firmware, so the shim does not depend on it).
+- `CNTFRQ_EL0` value (19.2 MHz expected from the DT; the shim's delay worked
+  at EL1, but the exact frequency was not read back).
 - Is the ramdisk present in `/chosen` on `fastboot boot`, and at which
   address? lk2nd's classic LK load addresses put it near `0x82000000`; the
-  ADT's `dram-base` must stay above it.
+  ADT's `dram-base` must stay above it. (Resolved for the shim: the full
+  shim found the initrd via `/chosen` and failed the magic check at stage
+  2.)
+- Whether `PSCI SYSTEM_RESET` via `smc #0` alone (no `hvc` fallback) works,
+  or whether the HVC fallback wedges: retry with a dedicated probe before
+  relying on PSCI anywhere else (e.g. `CPU_ON` for XNU's secondary cores).
 
 ## Milestone ladder
 

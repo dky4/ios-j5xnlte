@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build the j5xnlte lk2nd loader and wrap it in a boot.img v2 for
+# Build the j5xnlte lk2nd loader and wrap it in a boot.img v0 (kernel +
+# ramdisk, no dt_size) with the DTB appended to the kernel image, for
 # `fastboot boot`. No flash here: trials never write the BOOT partition.
 set -eu
 cd "$(dirname "$0")"
@@ -8,7 +9,11 @@ mkdir -p out
 : "${READELF:=aarch64-linux-gnu-readelf}"
 : "${NM:=aarch64-linux-gnu-nm}"
 : "${OBJCOPY:=aarch64-linux-gnu-objcopy}"
+: "${DTC:=dtc}"
 CFLAGS="-O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie -nostdlib -fno-asynchronous-unwind-tables -mgeneral-regs-only -mstrict-align -march=armv8-a -Wall -Wextra -Werror"
+# DIAG=1 builds the entry/PSCI probe instead of the full loader (see
+# loader.c: J5XNLTE_DIAG).
+[ -z "${DIAG:-}" ] || CFLAGS="$CFLAGS -DJ5XNLTE_DIAG"
 "$CC" $CFLAGS -c start.S -o out/start.o
 "$CC" $CFLAGS -c loader.c -o out/loader.o
 "$CC" $CFLAGS -c ../fdt.c -o out/fdt.o
@@ -29,11 +34,31 @@ if [ -n "${1:-}" ]; then
 else
 	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
 fi
-# No --dtb: lk2nd passes its own DTB in x0. No --cmdline: the payload's
-# command line comes from tools/mkpayload.py. Header version 0 (kernel +
-# ramdisk only): the installed mkbootimg requires a non-empty --dtb for v2,
-# and lk2nd ignores the boot image's DTB in favour of its own.
-mkbootimg --header_version 0 --kernel out/Image --ramdisk out/ramdisk.bin \
+# Minimal DTB passed to the booted image (see dtb.dts): lk2nd's
+# `fastboot boot` fails with "dtb not found" unless it can find one in the
+# received image. Its copy_dtb() only parses legacy qcdt dt.img tables, and
+# the bootimg v2 --dtb field is ignored, so the working path is
+# dev_tree_appended(): it reads a u32 DTB offset at kernel+0x2C
+# (DTB_OFFSET, platform/msm_shared/include/dev_tree.h) — reserved res3 in
+# the arm64 header — accepts a single non-skales DTB at exactly that offset,
+# copies it to ABOOT_FORCE_TAGS_ADDR (DDR_START+0x1E00000), patches /chosen
+# (cmdline, kaslr-seed, linux,initrd-start/end) and passes it in x0.
+"$DTC" -I dts -O dtb -o out/dtb.dtb dtb.dts
+python3 - out/Image out/dtb.dtb out/blob <<'EOF'
+import struct, sys
+image, dtb = bytearray(open(sys.argv[1], 'rb').read()), open(sys.argv[2], 'rb').read()
+# 8-align the DTB so lk2nd uses it in place instead of copying from the
+# received image buffer.
+off = (len(image) + 7) & ~7
+image += b'\0' * (off - len(image))
+image[0x2c:0x30] = struct.pack('<I', off)
+open(sys.argv[3], 'wb').write(bytes(image) + dtb)
+EOF
+# Header version 0: dt_size field is 0, so lk2nd skips its bogus copy_dtb()
+# qcdt-table parse and goes straight to dev_tree_appended(). Its forced
+# arm64 addresses (ABOOT_IGNORE_BOOT_HEADER_ADDRS in project/msm8916.mk)
+# override all offsets given here.
+mkbootimg --header_version 0 --kernel out/blob --ramdisk out/ramdisk.bin \
 	--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
 	--tags_offset 0x100 --pagesize 4096 \
 	-o out/j5xnlte-boot.img

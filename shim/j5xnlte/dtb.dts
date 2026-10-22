@@ -1,0 +1,24 @@
+/dts-v1/;
+
+/* Minimal arm64 DTB for the j5xnlte lk2nd fastboot boot path.
+ *
+ * lk2nd's `fastboot boot` rejects boot images without a DTB ("dtb not
+ * found") and passes this one to the booted image in x0 after patching
+ * /chosen (initrd ranges, cmdline). The shim only reads /chosen
+ * linux,initrd-start/end, so nothing else is needed here; XNU gets its
+ * device tree from the SWEETXNU payload's ADT, not from this DTB.
+ */
+/ {
+	compatible = "samsung,j5xnlte", "qcom,msm8916";
+	model = "Samsung Galaxy J5 (2016)";
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0 0x80000000 0 0x80000000>;
+	};
+
+	chosen {
+	};
+};

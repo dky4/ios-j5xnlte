@@ -1,8 +1,9 @@
-/*
- * j5xnlte boot shim entry: arm64 Linux Image header so lk2nd treats us
- * like a kernel. lk2nd enters at EL1, MMU/D-cache off, x0 = its own DTB.
- * No console and no vectors: an unexpected exception wedges, which is an
- * observable distinct from the shim's own reset-on-failure path.
+/* lk2nd enters at EL1 (its arm64 boot goes through the TZ milestone call,
+ * scm_elexec_call: el1_x0 = DTB, el1_elr = entry), MMU/D-cache off. x0 is
+ * the boot image's appended DTB copy at DDR_START+0x1E00000, patched by
+ * lk2nd (cmdline, kaslr-seed, linux,initrd-start/end). No console and no
+ * vectors: an unexpected exception wedges, which is an observable distinct
+ * from the shim's own reset-on-failure path.
  */
 	.section .text.head, "ax"
 	.globl _head
