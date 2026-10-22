@@ -1,8 +1,28 @@
-# Working on the A5XELTE fork
+# Working on the J5XNLTE fork
 
-- For Samsung SM-A510F work, read `A5XELTE_PROGRESS.md` and `docs/a5xelte-migration-map.md` first. Record new device evidence in the former and commit completed changes. Keep private VM addresses, passwords, device dumps and downloaded Apple binaries out of git.
-- Preserve recovery p11, EFS p3 and the existing Linux BOOT checkpoint. Current XNU trials may write only the explicitly authorized BOOT p10; the donor's Xiaomi `fastboot` and USERDATA instructions are not A5XELTE instructions.
-- Keep build success, recovered kernel markers, physical screen reports and iOS runtime behavior as separate claims. `NOTES.md` below is SWEET donor history; do not edit it to imply Samsung behavior.
+- For Samsung SM-J510FN (j5xnlte) work, read `J5XNLTE_PROGRESS.md` and
+  `docs/j5xnlte-migration-map.md` first. Record new device evidence in the
+  former and commit completed changes. Keep private VM addresses, passwords,
+  device dumps and downloaded Apple binaries out of git.
+- Device: Qualcomm MSM8916 (Snapdragon 410), 4x Cortex-A53 @ 1.2 GHz, GIC-400
+  (GICv2: GICD `0x0b000000`, GICC `0x0b002000`), PM8916 via SPMI, 2 GiB RAM,
+  720x1280 AMOLED (MDP5+DSI), Adreno 306, eMMC on SDHCI (`sdhc_1`
+  `@0x07824900`). The A53 is the same core as the A5XELTE work: 4 KiB pages
+  and Cortex-A53 codegen findings carry over; there is no 16 KiB granule.
+- Boot method is lk2nd, installed once with `heimdall flash --BOOT lk2nd.img`,
+  which provides Android fastboot. Every XNU trial uses `fastboot boot`.
+  Never write the BOOT partition and never use the Samsung bootchain, TWRP or
+  `shim/a5xelte/build-xnu-boot.sh`: this phone has no TWRP, and lk2nd's
+  fastboot is the only device access. Keep lk2nd itself intact: `fastboot
+  flash boot boot.img` would write over the 512 KiB-offset boot slot.
+- XNU uses `MACHINE_CONFIG=J5XNLTE`. Reuse the proven A5XELTE compile-time
+  facilities (4 KiB entry, Cortex-A53 codegen, GICv2 platform) instead of
+  donor hardware code: SWEET is GICv3/UFS (SM7150) and a5xelte is Exynos
+  DECON/DesignWare eMMC (Exynos7580) — neither matches this phone. See
+  `docs/j5xnlte-migration-map.md` for what reuses and what is new work.
+- Keep build success, device markers, physical screen reports and iOS runtime
+  behavior as separate claims. `NOTES.md` and `A5XELTE_PROGRESS.md` are donor
+  histories; do not edit them to imply J5XNLTE behavior.
 
 ## Original SWEET contributor instructions (donor reference)
 

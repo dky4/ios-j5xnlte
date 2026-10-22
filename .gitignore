@@ -6,6 +6,7 @@ recovery/
 research/
 *.ipsw
 shim/out/
+shim/j5xnlte/out/
 xnu/out/
 xnu/out-*/
 __pycache__/
