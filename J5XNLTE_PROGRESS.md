@@ -102,19 +102,21 @@ change.
   powerdown is a working, safe reset.
 - **More device findings:**
   - IMEM `0x146bf800` (the original marker word) wedged the first probe —
-    an unproven word, possibly secure-only. The marker now lives at
-    `0x146bf65c`, lk2nd's `RESTART_REASON_ADDR`, device-proven writable at
-    this context.
+    an unproven word, possibly secure-only. The marker then moved to
+    `0x146bf65c` (loader-writable, MMU off) and — after the readl-bug
+    diagnosis (below) — to `0x0860065c`, lk2nd's `RESTART_REASON_ADDR`
+    (MSM_SHARED_IMEM_BASE 0x08600000 + 0x65c).
   - The PM8916 default PSHOLD action is powerdown: `PS_HOLD = 0` at
     `0x4ab000` needs no SPMI setup and is the proven reset. lk2nd's own
     warm reset needs SPMI (`pm8x41_reset_configure(PON_PSHOLD_WARM_RESET)`)
     — later work if a warm reset (readable marker) is wanted.
   - While fastboot is alive, lk2nd peeks/pokes memory: `fastboot oem debug
-    readl 0x146bf65c`; `fastboot oem log` stages lk2nd's log.
+    readl 0x0860065c`; `fastboot oem log` stages lk2nd's log.
   - The phone auto-boots to Android while charging after a powerdown
     (charging boot); power press boots it normally.
 - **Fixes in the shim:** appended `dtb.dts` (8-aligned) with the offset at
-  header `0x2C`, header_version 0, IMEM marker moved to `0x146bf65c`,
+  header `0x2C`, header_version 0, IMEM marker moved to `0x0860065c` (after
+  0x146bf800 → 0x146bf65c → readl diagnosis),
   `PS_HOLD` powerdown as the failure reset (PSCI kept out of the path),
   `DIAG=1` entry-probe build, and doc updates (the boot-image layout and
   device findings are in `shim/j5xnlte/README.md` and
@@ -154,7 +156,9 @@ change.
     `MACHINE_FLAGS_ARM64_J5XNLTE = -DARM64_BOARD_CONFIG_J5XNLTE
     -mcpu=cortex-a53 -march=armv8-a` and the `ifeq filter` gate.
   - `0187` entry marker: u32 `0x584e5531` ("XNU1") via MOV64 x10/x11 and
-    `str w11, [x10]` + `dsb sy` at IMEM `0x146bf65c` next to the A5XELTE
+    `str w11, [x10]` + `dsb sy` at IMEM `0x0860065c` (lk2nd's mapped
+    `RESTART_REASON_ADDR`; originally 0x146bf65c, moved by the readl
+    diagnosis) next to the A5XELTE
     marker block in `start.s` (an 8-byte store does not transfer: the word
     is 4-byte aligned and Device memory); the five SM7150-hardware gates
     extended with `&& !defined(J5XNLTE)` (`start.s:547`, `start.s:734`,
@@ -364,16 +368,25 @@ change.
     and **jumped to XNU's entry**, and the phone hung there with no
     USB/fastboot re-enumeration (expected: no console, no USB bring-up
     yet).
-- **Device finding:** lk2nd's `oem debug readl` **hands the phone over to
-  Android instantly** (observed 2026-10-22; the README's "peek/poke while
-  fastboot is alive" claim does not hold in this lk2nd build — or the
-  charging-boot auto-boot raced it). Three read attempts all ended with
-  the phone re-enumerating in Android, not fastboot. Live IMEM reads via
-  fastboot are unusable; a marker read needs a different observable
-  (PMIC warm-reset path with SPMI, or a read-probe that copies the word
-  somewhere staged, e.g. lk2nd's `oem log` staging path).
+- **Device finding:** lk2nd's `oem debug readl` **warm-reboots the phone
+  into Android** (observed 3x, 2026-10-22). **Source diagnosis: a data
+  abort, not a handoff.** lk2nd's MMU table (`platform/msm8916/platform.c`)
+  maps `SYSTEM_IMEM_BASE 0x08600000` (1 MB) + MSM_SHARED_BASE + SCRATCH +
+  FB only — `0x146bf65c` (from the downstream dts `qcom,msm-imem@0x146bf000`)
+  is unmapped → `readl` takes a data abort → lk2nd panic → warm reboot →
+  lk2nd re-enters with no key held → Android. `oem debug` itself is safe on
+  mapped addresses (`lk2nd/fastboot/debug/register.c`: alignment checks,
+  `atoul` handles `0x` prefixes). lk2nd's own restart-reason word is
+  `RESTART_REASON_ADDR = 0x0860065c` (`iomap.h`), written/cleared in
+  `platform/msm_shared/reboot.c` — but msm8916 never touches it
+  (`USE_PON_REBOOT_REG=1` sends reboot modes to the PMIC spare; the dload
+  cookie goes through SCM; BS_INFO is unused on msm8916), so it only ever
+  reads it (`check_alarm_boot`) — device-proven mapped. **Marker moved to
+  `0x0860065c`** (patch 0187 + shim loader), readable with the unmodified
+  installed lk2nd. A PMIC warm-reset path with SPMI remains later work for
+  post-wedge reads.
 - **IMEM marker outstanding:** whether XNU's first instructions ran (the
-  `0x584e5531` "XNU1" word at `0x146bf65c`) is unmeasured. The
+  `0x584e5531` "XNU1" word at `0x0860065c`) is unmeasured. The
   jump-success observable above is strong but indirect evidence that the
   jump target was right: a jump into garbage would have faulted
   (EL1 fault → hung) without the loader's failure path firing either, so
@@ -408,9 +421,50 @@ change.
    - `shim/j5xnlte/out/j5xnlte-boot.img` (16,494,592 bytes): lk2nd
      loader + the payload as ramdisk + the minimal DTB, boot.img v0.
    - Trial: `fastboot boot shim/j5xnlte/out/j5xnlte-boot.img`, then read
-     the IMEM word via `fastboot oem debug readl 0x146bf65c` — expect
-     `0x584e5531` ("XNU1") once XNU reaches the marker write site;
+     the IMEM word via `fastboot oem debug readl 0x0860065c` — expect
+     `0x584e5531` ("XNU1") once XNU reaches the marker write site (the
+     loader's `0x4a355800` appears if XNU wedges before its own marker);
      `fastboot reboot` restores Android (nothing is written).
 3. Then: MDP5+DSI console bring-up (the J5 branch in `sweet_early.c` is a
    no-op until the framebuffer exists), eMMC/SDHCI for the rootfs, and the
    smc-only PSCI probe before relying on PSCI for XNU's secondary cores.
+
+## 2026-10-22 — readl-reboot bug diagnosed, marker moved to 0x0860065c
+
+- **Source diagnosis complete (`/home/rose/lk2nd`):** the `oem debug readl`
+  warm-reboot is a data abort on an unmapped VA, not a handoff:
+  - lk2nd's MMU section table (`platform/msm8916/platform.c:67`) maps
+    `SYSTEM_IMEM_BASE 0x08600000` for 1 MB only (plus MSM_SHARED_BASE,
+    SCRATCH, FB) — the shim's `IMEM_MARK 0x146bf65c` (from the downstream
+    dts `qcom,msm-imem@0x146bf000`) is unmapped → `readl` aborts → lk2nd
+    panic → warm reboot → lk2nd with no key held → Android (matches all 3
+    device observations).
+  - The installed lk2nd DOES register `oem debug readl`
+    (`strings lk2nd.img` confirmed; source `lk2nd/fastboot/debug/register.c`
+    — alignment checks correct, `atoul` parses `0x`). Unmatched commands
+    only FAIL (`app/aboot/fastboot.c:642`), no reboot path.
+  - lk2nd's own restart word is `RESTART_REASON_ADDR = 0x0860065c`
+    (`platform/msm8916/include/platform/iomap.h:40`,
+    `MSM_SHARED_IMEM_BASE 0x08600000 + 0x65c`), used in
+    `platform/msm_shared/reboot.c` (read+scrub in `check_reboot_mode`,
+    write in `reboot_device`) — **but msm8916 never touches it**: msm8916
+    sets `USE_PON_REBOOT_REG=1` (`project/msm8916.mk:62`), so reboot modes
+    go to the PMIC `PON_SOFT_RB_SPARE`, the dload cookie goes through SCM
+    (`scm_dload_mode`), and `BS_INFO` is only defined for msm8994/mdm9x25.
+    lk2nd only ever READS `0x0860065c` (`check_alarm_boot`, warm boots) —
+    device-proven mapped.
+- **Marker moved:** `xnu/patches/0187-j5xnlte-entry-marker.patch` start.s
+  store and `shim/j5xnlte/loader.c` `IMEM_MARK` now use `0x0860065c`.
+  Magic unchanged: XNU "XNU1" `0x584e5531`, loader `0x4a355800 | stage`.
+  Stale "device-proven writable" doc claims corrected
+  (`docs/j5xnlte-bringup.md`, `shim/j5xnlte/README.md`): lk2nd never
+  writes the word on msm8916; it is proven mapped and read, writable at
+  plain EL1 SRAM semantics (mainline Linux writes the same word at EL1 on
+  this SoC).
+- **Static builds pass:** both `sh shim/j5xnlte/build.sh` and `DIAG=1`
+  variants compile clean (`-Wall -Wextra -Werror`, no ABS64 relocations);
+  artifacts re-packed in `shim/j5xnlte/out/`.
+- **Next trial signal table** (`fastboot oem debug readl 0x0860065c`):
+  `0x584e5531` = XNU reached its marker write site; `0x4a355800|stage` =
+  loader stage (XNU wedged before its marker); Android reboot = the
+  address still faults (lost trial, report it).

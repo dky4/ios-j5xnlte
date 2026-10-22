@@ -19,7 +19,7 @@ device; every trial boots with lk2nd's Android fastboot.
 | GPU | Adreno 306 (a2xx class, later milestone) |
 | Storage | eMMC on SDHCI `sdhc_1` `@0x07824900` (core) / `@0x07824000` (host), bus-width 8, `qcom,sdhci-msm-v4` |
 | USB | `@0x078d9000`, `qcom,ci-hdrc` peripheral + `qcom,ehci-host` |
-| IMEM | `@0x146bf000` (`qcom,msm-imem`); downstream restart-reason word at `0x146bf65c` |
+| IMEM | lk2nd maps only `@0x08600000` (1 MB; `RESTART_REASON_ADDR` `0x0860065c`, read on warm boots, never written — reboot modes go to the PMIC spare). The downstream dts `qcom,msm-imem@0x146bf000` (`0x146bf65c`) is real but **not mapped by lk2nd**: lk2nd reads of it data-abort |
 | PSHOLD | `@0x004ab000` |
 
 Values marked "not yet measured" must be confirmed from EL1 on the phone before
@@ -70,8 +70,9 @@ The J5 shim has no console: whether lk2nd leaves a usable framebuffer is an
 open device-test question. Until a display path exists:
 
 - **Loader failure** (before the jump): the shim writes the stage number to
-  IMEM at `0x146bf65c` (`0x4a355800 | stage`, "J5XN" + stage; lk2nd's
-  `RESTART_REASON_ADDR`, device-proven NS-writable at this context), waits
+  IMEM at `0x0860065c` (`0x4a355800 | stage`, "J5XN" + stage; lk2nd's
+  `RESTART_REASON_ADDR`, mapped and read on warm boots, never written by
+  lk2nd), waits
   `stage * 5` seconds and drops `PS_HOLD` (`0x4ab000`) — the PM8916 default
   PSHOLD action powers the phone off. The observable is the powerdown
   delay: ~5 s per failure stage (see `shim/j5xnlte/README.md` for the stage
@@ -82,7 +83,7 @@ open device-test question. Until a display path exists:
 - **lk2nd's own log** (not XNU's): `fastboot oem log && fastboot get_staged
   OUT`.
 - **lk2nd peek/poke** (while fastboot is alive): `fastboot oem debug readl
-  0x146bf65c` reads the restart-reason word; once the PMIC warm-reset path
+  0x0860065c` reads the restart-reason word; once the PMIC warm-reset path
   (SPMI, `pm8x41_reset_configure(PON_PSHOLD_WARM_RESET)`) is implemented, a
   warm reset keeps the marker readable.
 - Later options once XNU runs: a screen console from the MDP5 bring-up, then
@@ -99,8 +100,19 @@ open device-test question. Until a display path exists:
   powerdown); it stays out of the reset path. PS_HOLD powerdown is the
   proven reset.
 - IMEM `0x146bf800` (the original marker word) wedged the first probe —
-  an unproven word, possibly secure-only; `0x146bf65c` (lk2nd's own
-  restart-reason word) is proven writable.
+  an unproven word, possibly secure-only. `0x146bf65c` (the downstream dts
+  restart-reason word) is loader-writable (MMU off), but is **not mapped by
+  lk2nd**: three `fastboot oem debug readl` attempts ended with the phone
+  booting Android, printing no value — lk2nd's `readl` takes a data abort
+  on the unmapped VA, panics and warm-reboots, and lk2nd re-enters with no
+  key held. `oem debug` itself is safe on mapped addresses.
+- Marker moved to `(MSM_SHARED_IMEM_BASE 0x08600000) + 0x65c =
+  0x0860065c` (lk2nd's `RESTART_REASON_ADDR`): lk2nd maps this 1 MB base,
+  reads the word on warm boots (`check_alarm_boot`) and never writes it
+  (`USE_PON_REBOOT_REG=1` sends reboot modes to the PMIC spare; the dload
+  cookie goes through SCM; BS_INFO is unused on msm8916) — device-proven
+  mapped, writable at plain EL1 SRAM semantics, and readable through
+  `fastboot oem debug readl` with the unmodified installed lk2nd.
 - Timer reads work at EL1: the full shim's 10 s `CNTFRQ`/`CNTPCT` delay
   was accurate (no fallback needed).
 
@@ -141,8 +153,8 @@ open device-test question. Until a display path exists:
 ## First XNU patch plan
 
 - **J5XNLTE entry marker** (mirroring a5xelte `0082`): writes a J5XNLTE-owned
-  marker at `start_first_cpu` entry — to IMEM `0x146bf65c` (the downstream
-  restart-reason word, readable after reboot) rather than a console, since
+  marker at `start_first_cpu` entry — to IMEM `0x0860065c` (lk2nd's mapped
+  `RESTART_REASON_ADDR`, readable after reboot) rather than a console, since
   there is no early console. Build success, the marker and any screen output
   remain separate claims.
 - **Board target** (mirroring `0085`): `MACHINE_CONFIG=J5XNLTE` board header,

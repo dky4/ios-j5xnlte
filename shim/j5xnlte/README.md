@@ -62,9 +62,9 @@ entry/PS_HOLD probe instead of the full loader. Trials are always
 ## Failure observables
 
 There is no console on the J5, so failures are observable as a powerdown
-with a stage-dependent delay and an IMEM marker at `0x146bf65c`
-(`0x4a355800 | stage`; lk2nd's `RESTART_REASON_ADDR`, proven NS-writable at
-this context):
+with a stage-dependent delay and an IMEM marker at `0x0860065c`
+(`0x4a355800 | stage`; lk2nd's `RESTART_REASON_ADDR`, read on warm boots
+and never written by lk2nd):
 
 | Marker | Meaning | Powerdown delay |
 | --- | --- | --- |
@@ -80,7 +80,7 @@ phone boots back on a power press (it auto-boots while charging). PSCI
 `SYSTEM_RESET` from the TZ-milestone EL1 state wedged a dedicated probe
 (delay elapsed, then no powerdown), so it stays out of the reset path.
 Success jumps to XNU; a wedge or later XNU-owned output is then XNU
-evidence. While fastboot is alive, lk2nd's `oem debug readl 0x146bf65c`
+evidence. While fastboot is alive, lk2nd's `oem debug readl 0x0860065c`
 peek/poke can read the marker of a warm reset once the PMIC warm-reset path
 (SPMI) is implemented.
 

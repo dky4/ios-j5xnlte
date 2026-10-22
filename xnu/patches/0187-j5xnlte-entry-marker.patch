@@ -39,10 +39,13 @@ index 7da26d2..d8b78ea 100644
  
 -#if defined(SWEET) && !defined(A5XELTE)
 +#if defined(J5XNLTE)
-+	/* Earliest XNU-owned marker in Qualcomm IMEM. IMEM is Device memory and
-+	 * this word is only 4-byte aligned, so the marker transfers as a 32-bit
-+	 * store (an 8-byte store does not reach this address). */
-+	MOV64	x10, 0x146bf65c
++	/* Earliest XNU-owned marker in Qualcomm IMEM. lk2nd maps only the
++	 * 0x08600000 IMEM base (its RESTART_REASON_ADDR is +0x65c) and reads
++	 * that word on warm boots, so this address stays readable through
++	 * `fastboot oem debug readl`; the word is only 4-byte aligned, so the
++	 * marker transfers as a 32-bit store (an 8-byte store does not reach
++	 * this address). */
++	MOV64	x10, 0x0860065c
 +	MOV64	x11, 0x584e5531
 +	str		w11, [x10]
 +	dsb		sy

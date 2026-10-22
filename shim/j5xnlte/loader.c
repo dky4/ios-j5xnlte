@@ -11,17 +11,20 @@
  * caches off, x0 = boot_args (physical).
  *
  * There is no console: a failure writes its stage number to IMEM at
- * 0x146bf65c (0x4a355800 | stage, "J5XN" + stage), waits stage * 5 seconds
+ * 0x0860065c (0x4a355800 | stage, "J5XN" + stage), waits stage * 5 seconds
  * and resets; the reboot delay is the first observable. The marker word is
- * lk2nd's RESTART_REASON_ADDR (MSM_SHARED_IMEM_BASE+0x65C), which lk2nd
- * itself writes from the same TZ-milestone EL1 context, so it is proven
- * NS-writable; the original 0x146bf800 word wedged the first diagnostic
- * boot. See docs/j5xnlte-bringup.md.
+ * lk2nd's RESTART_REASON_ADDR (MSM_SHARED_IMEM_BASE 0x08600000 + 0x65c):
+ * lk2nd maps only this IMEM base, reads the word on warm boots and never
+ * writes it (reboot modes go to the PMIC spare, USE_PON_REBOOT_REG=1), so
+ * it stays readable through `fastboot oem debug readl`. The earlier
+ * 0x146bf65c (the downstream dts msm-imem) is not mapped by lk2nd: reading
+ * it takes a data abort and warm-reboots into Android (first-trial
+ * finding). See docs/j5xnlte-bringup.md.
  */
 #include <stdint.h>
 #include "../fdt.h"
 
-#define IMEM_MARK		0x146bf65cUL	/* RESTART_REASON_ADDR: imem@146bf000 + 0x65c */
+#define IMEM_MARK		0x0860065cUL	/* RESTART_REASON_ADDR: lk2nd's mapped imem@08600000 + 0x65c */
 #define RAM_BASE		0x80000000UL	/* DRAM start */
 #define RAM_END			0x100000000UL	/* 2 GiB */
 #define PAGE_SIZE		4096UL
@@ -115,7 +118,7 @@ static void delay(unsigned s)
  * it stays out of the reset path. lk2nd itself resets through the PMIC
  * PSHOLD warm-reset path, which needs SPMI (pm8x41_reset_configure); a
  * warm reset would keep the IMEM marker readable via lk2nd's
- * `fastboot oem debug readl 0x146bf65c` and is later work if needed. */
+ * `fastboot oem debug readl 0x0860065c` and is later work if needed. */
 static void __attribute__((noreturn)) fail_reset(void)
 {
 	*(volatile uint32_t *)0x004ab000UL = 0;
