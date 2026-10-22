@@ -445,7 +445,23 @@ change.
 4. Then: MDP5+DSI console bring-up (the J5 branch in `sweet_early.c` is a
    no-op until the framebuffer exists), eMMC/SDHCI for the rootfs, and the
    smc-only PSCI probe before relying on PSCI for XNU's secondary cores.
-
+   Probes and handoff ready (all static builds pass, `-Wall -Wextra
+   -Werror`):
+   - **Full loader (committed `9c64e9f`)**: fills boot_args Video from
+     `/chosen/framebuffer` (v_baseAddr physical, depth from the format) —
+     xnu inherits the continuous splash without MDP5 register work. The
+     currently packed `shim/j5xnlte/out/j5xnlte-boot.img` (16,510,976
+     bytes) is this loader + the marker-fix payload.
+   - **DIAG=3 PSCI probe (committed `9c64e9f`)**: PSCI CPU_ON (0x84000003)
+     via smc #0 ALONE (no hvc fallback — the smc→hvc SYSTEM_RESET pair
+     wedged). Signals at IMEM `0x0860065c`: `0` = CPU_ON success (PSCI
+     usable from this state), negative = PSCI error (-1 = NOT_SUPPORTED),
+     `0x4a355800` with a hang = the smc itself hung. PS_HOLD powerdown
+     follows the smc. Pack with `DIAG=3 sh shim/j5xnlte/build.sh`.
+   - Console bring-up simplification: if the MDP keeps refreshing through
+     the jump, the screen console reduces to writing text into the splash
+     framebuffer memory (no MDP5 registers at all) — the a5xelte `0089`
+     display_console pattern on the inherited fb.
 ## 2026-10-22 — readl-reboot bug diagnosed, marker moved to 0x0860065c
 
 - **Source diagnosis complete (`/home/rose/lk2nd`):** the `oem debug readl`
