@@ -368,11 +368,17 @@ change.
 
 1. CI milestone DONE: run 39838687729 (head `aa5ba59`) produced
    `kernel.development.j5xnlte` in the `xnu-kernel` artifact (verified).
-2. Pack a real payload with `tools/mkpayload.py` + `tools/mkadt_j5xnlte.py`
-   and run the first `fastboot boot` trial of a real kernel payload. The
-   IMEM word at `0x146bf65c` should read `0x584e5531` ("XNU1") via
-   `fastboot oem debug readl 0x146bf65c` — distinct from the shim's
-   "J5X" stage markers.
+2. Real-payload trial — the payload and boot image are already built:
+   - `/tmp/opencode/payload-xnu-j5xnlte.bin`: SWEETXNU payload,
+     virt_base `0xfffffff006000000`, entry `0xfffffff007423488`,
+     kernel_end `0xfffffff0080a0000`, 10 segments, 16,452,416 bytes,
+     phys_base/mem_size from the ADT (`0x88000000`/`0x78000000`).
+   - `shim/j5xnlte/out/j5xnlte-boot.img` (16,494,592 bytes): lk2nd
+     loader + the payload as ramdisk + the minimal DTB, boot.img v0.
+   - Trial: `fastboot boot shim/j5xnlte/out/j5xnlte-boot.img`, then read
+     the IMEM word via `fastboot oem debug readl 0x146bf65c` — expect
+     `0x584e5531` ("XNU1") once XNU reaches the marker write site;
+     `fastboot reboot` restores Android (nothing is written).
 3. Then: MDP5+DSI console bring-up (the J5 branch in `sweet_early.c` is a
    no-op until the framebuffer exists), eMMC/SDHCI for the rootfs, and the
    smc-only PSCI probe before relying on PSCI for XNU's secondary cores.
