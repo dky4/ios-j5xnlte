@@ -350,6 +350,38 @@ change.
 - Not yet verified on the phone: payload boot, XNU marker, screen output,
   any iOS runtime behavior.
 
+## 2026-10-22 — First real-payload trials (jump to XNU proven, marker read outstanding)
+
+- **Two identical real-payload `fastboot boot` trials** of
+  `shim/j5xnlte/out/j5xnlte-boot.img` (lk2nd loader + the real
+  `kernel.development.j5xnlte` payload as ramdisk + minimal DTB,
+  boot.img v0; 16,494,592 bytes, payload 16,452,416 bytes):
+  - Send + boot complete in 0.53 s; `Booting OKAY`.
+  - **Fastboot disappears within 2 s of booting in both trials.** The
+    loader's failure path (IMEM stage code, `stage * 5 s` wait, reset
+    back into fastboot) never triggered — so the loader found the
+    SWEETXNU magic, copied the 10 segments, placed the ADT/boot_args
+    and **jumped to XNU's entry**, and the phone hung there with no
+    USB/fastboot re-enumeration (expected: no console, no USB bring-up
+    yet).
+- **Device finding:** lk2nd's `oem debug readl` **hands the phone over to
+  Android instantly** (observed 2026-10-22; the README's "peek/poke while
+  fastboot is alive" claim does not hold in this lk2nd build — or the
+  charging-boot auto-boot raced it). Three read attempts all ended with
+  the phone re-enumerating in Android, not fastboot. Live IMEM reads via
+  fastboot are unusable; a marker read needs a different observable
+  (PMIC warm-reset path with SPMI, or a read-probe that copies the word
+  somewhere staged, e.g. lk2nd's `oem log` staging path).
+- **IMEM marker outstanding:** whether XNU's first instructions ran (the
+  `0x584e5531` "XNU1" word at `0x146bf65c`) is unmeasured. The
+  jump-success observable above is strong but indirect evidence that the
+  jump target was right: a jump into garbage would have faulted
+  (EL1 fault → hung) without the loader's failure path firing either, so
+  start.s execution needs the marker or another observable to confirm.
+- **Battery/burn-in note:** the user disconnects after each trial (AMOLED
+  burn-in); each re-entry is a power-button force-reboot + fastboot-key
+  boot. Keep trials short.
+
 ## Open device-test questions
 
 - Does lk2nd hand off a usable framebuffer (address/stride), and when?
