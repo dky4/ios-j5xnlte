@@ -11,9 +11,13 @@ mkdir -p out
 : "${OBJCOPY:=aarch64-linux-gnu-objcopy}"
 : "${DTC:=dtc}"
 CFLAGS="-O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie -nostdlib -fno-asynchronous-unwind-tables -mgeneral-regs-only -mstrict-align -march=armv8-a -Wall -Wextra -Werror"
-# DIAG=1 builds the entry/PSCI probe instead of the full loader (see
-# loader.c: J5XNLTE_DIAG).
-[ -z "${DIAG:-}" ] || CFLAGS="$CFLAGS -DJ5XNLTE_DIAG"
+# DIAG=1 builds the entry probe, DIAG=2 the lk2nd.pass-simplefb display
+# probe instead of the full loader (see loader.c: J5XNLTE_DIAG,
+# J5XNLTE_DIAG_FB).
+case "${DIAG:-}" in
+1) CFLAGS="$CFLAGS -DJ5XNLTE_DIAG" ;;
+2) CFLAGS="$CFLAGS -DJ5XNLTE_DIAG_FB" ;;
+esac
 "$CC" $CFLAGS -c start.S -o out/start.o
 "$CC" $CFLAGS -c loader.c -o out/loader.o
 "$CC" $CFLAGS -c ../fdt.c -o out/fdt.o
@@ -57,9 +61,12 @@ EOF
 # Header version 0: dt_size field is 0, so lk2nd skips its bogus copy_dtb()
 # qcdt-table parse and goes straight to dev_tree_appended(). Its forced
 # arm64 addresses (ABOOT_IGNORE_BOOT_HEADER_ADDRS in project/msm8916.mk)
-# override all offsets given here.
+# override all offsets given here. The cmdline arg makes lk2nd publish its
+# continuous-splash framebuffer as /chosen/simple-framebuffer (boot_type
+# ARM64 only; the full loader ignores it).
 mkbootimg --header_version 0 --kernel out/blob --ramdisk out/ramdisk.bin \
 	--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
 	--tags_offset 0x100 --pagesize 4096 \
+	--cmdline lk2nd.pass-simplefb \
 	-o out/j5xnlte-boot.img
 ls -l out/Image out/j5xnlte-boot.img

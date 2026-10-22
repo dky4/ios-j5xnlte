@@ -65,7 +65,13 @@ _Static_assert(__builtin_offsetof(struct boot_args, Video) == 40, "boot_args lay
 _Static_assert(__builtin_offsetof(struct boot_args, CommandLine) == 108, "boot_args layout");
 _Static_assert(sizeof(struct boot_args) == 736, "boot_args layout");
 
-#ifndef J5XNLTE_DIAG
+#if !defined(J5XNLTE_DIAG) && !defined(J5XNLTE_DIAG_FB)
+#define J5XNLTE_FULL_LOADER 1
+#else
+#undef J5XNLTE_FULL_LOADER
+#endif
+
+#ifdef J5XNLTE_FULL_LOADER
 /* MMU off: everything is Device memory, so copy in aligned 8-byte words. */
 static void copy64(uintptr_t dst, uintptr_t src, uint64_t n)
 {
@@ -126,9 +132,9 @@ static void __attribute__((noreturn)) fail_reset(void)
 	for (;;)
 		__asm__ volatile("wfe");
 }
-#endif /* !J5XNLTE_DIAG */
+#endif /* !J5XNLTE_FULL_LOADER */
 
-#ifndef J5XNLTE_DIAG
+#ifdef J5XNLTE_FULL_LOADER
 static void __attribute__((noreturn)) fail(int stage)
 {
 	/* IMEM keeps the marker across the warm reset; the stage number is
@@ -138,7 +144,7 @@ static void __attribute__((noreturn)) fail(int stage)
 	delay(stage * 5);
 	fail_reset();
 }
-#endif /* !J5XNLTE_DIAG */
+#endif /* J5XNLTE_FULL_LOADER */
 
 #ifdef J5XNLTE_DIAG
 /*
@@ -154,6 +160,44 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 	(void)dtb;
 	*(volatile uint32_t *)IMEM_MARK = 0x4a355800u | 1u;
 	__asm__ volatile("dsb sy" ::: "memory");
+	/* MPM2_MPM_PS_HOLD (target/msm8916 iomap): low = PMIC powerdown. */
+	*(volatile uint32_t *)0x004ab000UL = 0;
+	__asm__ volatile("dsb sy" ::: "memory");
+	for (;;)
+		__asm__ volatile("wfe");
+}
+#elif defined(J5XNLTE_DIAG_FB)
+/*
+ * Display probe (DIAG=2): lk2nd.pass-simplefb publishes the framebuffer as
+ * /chosen/framebuffer@<base> (compatible "simple-framebuffer", boot_type
+ * ARM64 only — BOOT_DOWNSTREAM/BOOT_LK2ND skip); dump the display facts
+ * into IMEM words and drop PS_HOLD. IMEM word layout, all readable
+ * per-word via `fastboot oem debug readl`:
+ *   0x0860065c: fb base, +4: fb size, +8: width, +12: height,
+ *   +16: stride, +20: format (first 4 chars as ASCII).
+ * 0x4a355801 at 0x5c = the node is missing (lk2nd detected no continuous
+ * splash, or the cmdline arg did not flow).
+ */
+void __attribute__((noreturn)) shim_main(uintptr_t dtb)
+{
+	uint32_t base = 0, size = 0, width = 0, height = 0, stride = 0, fmt4 = 0;
+
+	/* Stage 0: the probe itself is running. */
+	*(volatile uint32_t *)IMEM_MARK = 0x4a355800u;
+	__asm__ volatile("dsb sy" ::: "memory");
+
+	if (fdt_chosen_fb(dtb, &base, &size, &width, &height, &stride, &fmt4)) {
+		*(volatile uint32_t *)IMEM_MARK = base;
+		*(volatile uint32_t *)(IMEM_MARK + 4) = size;
+		*(volatile uint32_t *)(IMEM_MARK + 8) = width;
+		*(volatile uint32_t *)(IMEM_MARK + 12) = height;
+		*(volatile uint32_t *)(IMEM_MARK + 16) = stride;
+		*(volatile uint32_t *)(IMEM_MARK + 20) = fmt4;
+	} else {
+		*(volatile uint32_t *)IMEM_MARK = 0x4a355801u;
+	}
+	__asm__ volatile("dsb sy" ::: "memory");
+
 	/* MPM2_MPM_PS_HOLD (target/msm8916 iomap): low = PMIC powerdown. */
 	*(volatile uint32_t *)0x004ab000UL = 0;
 	__asm__ volatile("dsb sy" ::: "memory");
