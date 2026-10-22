@@ -230,8 +230,42 @@ change.
     multi-word value can never break `TARGET_CONFIGS` again.
   - `405a13a`: quotes the input description (the unquoted `auto:` colon
     broke workflow parsing — push run 39829414041 failed with zero jobs).
-- **Push-triggered CI run 4 (head `405a13a`) queued with
-  `MACHINE_CONFIG=J5XNLTE`.**
+## 2026-10-22 — CI run 39829694147 diagnosis (first real J5 kernel compiles)
+
+- **Push run 5 (head `405a13a`, job 120002234851) reached real compiles**
+  of `DEVELOPMENT_ARM64_J5XNLTE` and failed with five distinct error
+  groups (complete list collected from the full log; `-k` builds past the
+  first error):
+  1. `pmap.c:10988` static assert — commpage nesting requires the device
+     user VA max (`MACH_VM_MAX_ADDRESS` came from the MacOSX branch).
+  2. `commpage_asm.s:284/343` `instruction requires: lse` — Cortex-A53
+     has no LSE; the A5XELTE LL/SC trylock path must be taken.
+  3. `sweet_bearssl` headers/sources missing — `0020-stage-bearssl.sh`
+     gate was SWEET-only.
+  4. `hfs.h`/`sweet_hfs` sources missing — `0026-stage-hfs.sh` gate was
+     SWEET-only.
+  5. `TargetConditionals.h` not found in `sweet_pthread_init.o` — the
+     kext-flavoured `-nostdinc` compile includes EXPORT_HDRS
+     `osfmk/kern/debug.h`, whose public flavor pulls
+     `<TargetConditionals.h>`.
+  The iokit `A5XELTEGPU*` errors are donor-skip fallout (files from
+  skipped 0114+ patches), expected and harmless.
+- **Fixes (committed `719307c`):**
+  - `0192-j5xnlte-vm-layout-commpage.patch`: `vm_param.h`
+    `MACH_VM_MAX_ADDRESS_RAW` `0x0000000FC0000000` (same as a5xelte) so
+    the assert passes exactly, and both `commpage_asm.s`
+    `ARM64_BOARD_CONFIG_A5XELTE` gates extended with J5XNLTE (LL/SC
+    trylock path).
+  - `0019-stage-libpthread.sh`: copies the SDK `TargetConditionals.h`
+    into `EXTERNAL_HEADERS/` (already an `-I` path).
+  - `0020`/`0026` staging gates case-extended to
+    `SWEET|A5XELTE|J5XNLTE`.
+  - `zalloc.c:165` `ZONE_MAP_MAX` (`#if defined(A5XELTE)` compact heap)
+    deliberately **not** changed: with 4 KiB pages the J5 kernel VA sits
+    in the `0xfffffff000000000` region, so the MacOSX 128 GiB zone-map VA
+    is a runtime question for the first device trial, not a compile
+    blocker.
+- **Push-triggered CI run 39833368443 (head `719307c`) queued.**
 
 ## Open device-test questions
 
@@ -249,9 +283,9 @@ change.
 
 ## Next verified milestone
 
-1. Check the push-triggered CI run (head `405a13a`, `MACHINE_CONFIG`
-   auto-selected to J5XNLTE on the branch; all patches apply with
-   `--unidiff-zero` after the build-script sed). Check the run and the
+1. Check the push-triggered CI run 39833368443 (head `719307c`,
+   `MACHINE_CONFIG=J5XNLTE`; the 0192 VA/commpage patch and the
+   0019/0020/0026 staging extensions are committed). Check the run and the
    `xnu-kernel` artifact via GitHub web (`gh` is not installed).
 2. Once a kernel artifact exists: pack a real payload with
    `tools/mkpayload.py` + `tools/mkadt_j5xnlte.py` and run the first
