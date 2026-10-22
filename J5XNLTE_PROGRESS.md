@@ -201,6 +201,38 @@ change.
   round-trip only. No CI kernel exists yet, no payload has been booted,
   and no XNU marker or screen report has been observed on the phone.
 
+## 2026-10-22 — CI run 39826891848 diagnosis (machine_config input, not patches)
+
+- **First CI run failed in the Build step with exit code 2** (run
+  39826891848, manual `workflow_dispatch`, head `70edf39`). Diagnosis from
+  the full job log (fetched with the local git credential-manager token;
+  `gh` is not installed and the unauthenticated logs endpoint returns 403):
+  - All six J5 patches **0186-0191 applied cleanly** in CI
+    (`Applying patch:` lines; 142 patches applied, donor campaign-2 patches
+    0114-0185 skip with the expected warnings).
+  - build_setup, exporthdrs and installhdrs for
+    `DEVELOPMENT_ARM64_J5XNLTE` ran with **zero compile errors** before the
+    abort.
+  - **Root cause:** the dispatch passed `machine_config = "J5XNLTE SWEET"`.
+    build.sh expands `TARGET_CONFIGS="$KERNEL_CONFIG $ARCH_CONFIG
+    $MACHINE_CONFIG"` and xnu parses that list in triples (KERNEL ARCH
+    MACHINE), so the 4-word list left a dangling `SWEET` which make
+    rendered as a bogus second build config `SWEET^^` (empty arch + machine)
+    and rejected at `MakeInc.kernel:14: *** Unsupported
+    CURRENT_ARCH_CONFIG .  Stop.` (`make[1]: ***
+    [build_all_bootstrap_SWEET^^] Error 2`), failing `make install` → step
+    exit 2. The genuine J5 kernel was never compiled — the step aborted
+    during installhdrs.
+- **Fixes (committed):**
+  - `03ddc67`: the empty `machine_config` dispatch input auto-selects
+    `J5XNLTE` on `j5xnlte` (the old default `SWEET` built the donor config),
+    and the Build step keeps only the first word of `MACHINE_CONFIG` so a
+    multi-word value can never break `TARGET_CONFIGS` again.
+  - `405a13a`: quotes the input description (the unquoted `auto:` colon
+    broke workflow parsing — push run 39829414041 failed with zero jobs).
+- **Push-triggered CI run 4 (head `405a13a`) queued with
+  `MACHINE_CONFIG=J5XNLTE`.**
+
 ## Open device-test questions
 
 - Does lk2nd hand off a usable framebuffer (address/stride), and when?
@@ -217,8 +249,8 @@ change.
 
 ## Next verified milestone
 
-1. Commit and push to `j5xnlte` to trigger the CI build (`MACHINE_CONFIG`
-   defaults to J5XNLTE on the branch; all patches apply with
+1. Check the push-triggered CI run (head `405a13a`, `MACHINE_CONFIG`
+   auto-selected to J5XNLTE on the branch; all patches apply with
    `--unidiff-zero` after the build-script sed). Check the run and the
    `xnu-kernel` artifact via GitHub web (`gh` is not installed).
 2. Once a kernel artifact exists: pack a real payload with
