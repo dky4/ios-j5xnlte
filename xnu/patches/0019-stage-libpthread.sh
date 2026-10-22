@@ -65,4 +65,9 @@ PY
 # the provider so local compiles from the uploaded build tree work as well.
 pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
 cp "$pthread_sdk/usr/include/TargetConditionals.h" bsd/pthread/sweet_libpthread/
+# The kext-flavoured bsd/pthread compiles include EXPORT_HDRS osfmk/kern/debug.h,
+# whose public flavor pulls <TargetConditionals.h> under -nostdinc (run
+# 39829694148: fatal error 'TargetConditionals.h' file not found in
+# sweet_pthread_init.o). EXTERNAL_HEADERS is already on those include paths.
+cp "$pthread_sdk/usr/include/TargetConditionals.h" EXTERNAL_HEADERS/
 echo "Staged libpthread-514.100.2 ($pthread_sha) for ${MACHINE_CONFIG}"
