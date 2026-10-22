@@ -10,8 +10,8 @@ on:
         description: RELEASE / DEVELOPMENT / DEBUG
         default: DEVELOPMENT
       machine_config:
-        description: xnu MACHINE_CONFIG
-        default: SWEET
+        description: xnu MACHINE_CONFIG (empty = auto: J5XNLTE on j5xnlte, else SWEET)
+        default: ""
       keep_going:
         description: make -k (collect all compile errors in one run)
         default: "true"
@@ -77,7 +77,13 @@ jobs:
         env:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
-        run: bash build.sh
+        run: |
+          # build.sh expands TARGET_CONFIGS="$KERNEL_CONFIG $ARCH_CONFIG $MACHINE_CONFIG"
+          # and xnu parses it in triples (KERNEL ARCH MACHINE); a multi-word MACHINE_CONFIG
+          # leaves a dangling word that make rejects as "Unsupported CURRENT_ARCH_CONFIG"
+          # mid-build (run 39826891848). Keep the first value only.
+          MACHINE_CONFIG="${MACHINE_CONFIG%% *}"
+          bash build.sh
 
       - name: Package build tree for local compiles
         if: always()
