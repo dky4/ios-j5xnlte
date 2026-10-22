@@ -1,6 +1,6 @@
 --- a/pexpert/pexpert/arm64/A5XELTE.h
 +++ b/pexpert/pexpert/arm64/A5XELTE.h
-@@ -18,7 +18,7 @@
+@@ -18,6 +18,6 @@
  #define __ARM_DEBUG__                 7
  #define __ARM_ENABLE_SWAP__           1
  #define __ARM_V8_CRYPTO_EXTENSIONS__  1

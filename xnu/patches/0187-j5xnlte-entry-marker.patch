@@ -1,0 +1,107 @@
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index fbc383d..8d83f64 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1825,7 +1825,7 @@ init_ptpages(tt_entry_t *tt, vm_map_address_t start, vm_map_address_t end, bool
+ #define ARM64_PHYSMAP_ALIGNMENT_PADDING (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE)
+ #endif
+ 
+-#if defined(SWEET) && !defined(A5XELTE)
++#if defined(SWEET) && !defined(A5XELTE) && !defined(J5XNLTE)
+ /*
+  * The reserved low-globals/kernel region is excluded from VM allocation.
+  * Use the otherwise empty 32MB block above low globals and below gVirtBase
+@@ -2179,7 +2179,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 
+ 	arm_set_user_tbi();
+ 
+-#if defined(SWEET) && !defined(A5XELTE)
++#if defined(SWEET) && !defined(A5XELTE) && !defined(J5XNLTE)
+ 	/* phystokv() must still refer to the bootstrap aperture here. */
+ 	sweet_early_map_final();
+ #endif
+@@ -2188,7 +2188,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 
+ 	ml_enable_monitor();
+ 
+-#if defined(SWEET) && !defined(A5XELTE)
++#if defined(SWEET) && !defined(A5XELTE) && !defined(J5XNLTE)
+ 	/* The final TTBR1 is live; leave the outgoing VA=PA framebuffer alias. */
+ 	sweet_early_relocate(SWEET_EARLY_FB_VA);
+ #endif
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index 7da26d2..d8b78ea 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -544,7 +544,17 @@ La5_entry_pixel:
+ 	bl	La5_draw_text
+ #endif
+ 
+-#if defined(SWEET) && !defined(A5XELTE)
++#if defined(J5XNLTE)
++	/* Earliest XNU-owned marker in Qualcomm IMEM. IMEM is Device memory and
++	 * this word is only 4-byte aligned, so the marker transfers as a 32-bit
++	 * store (an 8-byte store does not reach this address). */
++	MOV64	x10, 0x146bf65c
++	MOV64	x11, 0x584e5531
++	str		w11, [x10]
++	dsb		sy
++#endif
++
++#if defined(SWEET) && !defined(A5XELTE) && !defined(J5XNLTE)
+ 	/* Stage 0: white 64x32 band, no stack or page tables needed. */
+ 	MOV64	x0, (0x9c000000 + 2368 * 4320)
+ 	mov		w1, #-1
+@@ -731,7 +741,7 @@ La5_fb_attr:
+ 	b.ne	La5_fb_attr
+ #endif
+ 
+-#if defined(SWEET) && !defined(A5XELTE)
++#if defined(SWEET) && !defined(A5XELTE) && !defined(J5XNLTE)
+ 	/*
+ 	 * Splash framebuffer: one 32MB Normal-NC block in the EXISTING V=P
+ 	 * L2 table. Both framebuffer and RAM use L1 index 0; another call to
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index dcdbcf6..fc03ec4 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -111,6 +111,39 @@ sweet_early_panic(const char *fmt, va_list *args)
+ 
+ void sweet_early_relocate(uint64_t base) { (void)base; }
+ void sweet_early_disable(void) { a5_active = 0; }
++#elif defined(J5XNLTE)
++/*
++ * Qualcomm IMEM markers are the only early diagnostics on this board:
++ * lk2nd provides fastboot, not a serial console, and the MDP5+DSI
++ * framebuffer is not mapped during bootstrap. start.s stores the XNU
++ * entry marker in IMEM; keep the console calls no-ops until the MDP5
++ * console exists.
++ */
++#include <stdint.h>
++#include <kern/misc_protos.h>
++
++void
++sweet_early_mark(unsigned int stage, const char *label)
++{
++	(void)stage;
++	(void)label;
++}
++
++void
++sweet_early_putc(char c)
++{
++	(void)c;
++}
++
++void
++sweet_early_panic(const char *fmt, va_list *args)
++{
++	(void)fmt;
++	(void)args;
++}
++
++void sweet_early_relocate(uint64_t base) { (void)base; }
++void sweet_early_disable(void) { }
+ #elif defined(SWEET)
+ #include <stdint.h>
+ #include <kern/misc_protos.h>

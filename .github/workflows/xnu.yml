@@ -30,7 +30,7 @@ env:
   DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
   MACOS_VERSION: ${{ inputs.macos_version || '13.5' }}
   KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
-  MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
+  MACHINE_CONFIG: ${{ inputs.machine_config || (github.ref_name == 'j5xnlte' && 'J5XNLTE' || 'SWEET') }}
 
 jobs:
   build:
@@ -51,6 +51,11 @@ jobs:
           # libfirehose_kernel is built arm64e-only; the SWEET kernel is plain arm64
           sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
           grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh
+          # Zero-context patches (diff -U0 hunks) require --unidiff-zero; plain
+          # git apply rejects them, and build.sh would silently skip the patch
+          sed -i '' 's|git apply --check "\$PATCH"|git apply --unidiff-zero --check "$PATCH"|' dxb/build.sh
+          sed -i '' 's|git apply "\$PATCH"|git apply --unidiff-zero "$PATCH"|' dxb/build.sh
+          grep -c -- '--unidiff-zero' dxb/build.sh
           ls dxb/patches
 
       - name: Deps

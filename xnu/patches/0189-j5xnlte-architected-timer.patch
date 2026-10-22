@@ -1,0 +1,15 @@
+diff --git a/pexpert/arm/pe_identify_machine.c b/pexpert/arm/pe_identify_machine.c
+index 842c40c..e857f09 100644
+--- a/pexpert/arm/pe_identify_machine.c
++++ b/pexpert/arm/pe_identify_machine.c
+@@ -555,6 +555,10 @@ pe_arm_map_interrupt_controller(void)
+ 		/* CNTV is an architectural timer. It has no MMIO timer base in
+ 		 * the Exynos7580 device tree; virtual timer PPI 27 is in the GIC. */
+ 		return 1;
++#elif defined(J5XNLTE)
++		/* CNTV is an architectural timer. It has no MMIO timer base in
++		 * the msm8916 device tree; virtual timer PPI 20 is in the GIC. */
++		return 1;
+ #else
+ 		kprintf("pe_arm_map_interrupt_controller: failed to find the timer.\n");
+ 		return 0;

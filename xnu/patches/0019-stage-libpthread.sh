@@ -3,7 +3,7 @@
 set -euo pipefail
 
 case "${MACHINE_CONFIG:-}" in
-    SWEET|A5XELTE) ;;
+    SWEET|A5XELTE|J5XNLTE) ;;
     *) exit 0 ;;
 esac
 [[ "${MACOS_VERSION:-}" == 13.5 ]] || {

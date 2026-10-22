@@ -1,6 +1,6 @@
 --- a/makedefs/MakeInc.def
 +++ b/makedefs/MakeInc.def
-@@ -62,7 +62,7 @@
+@@ -62,6 +62,6 @@
  MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
  MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8.2-a+crypto
 -MACHINE_FLAGS_ARM64_A5XELTE = -DARM64_BOARD_CONFIG_A5XELTE            -march=armv8-a+crypto

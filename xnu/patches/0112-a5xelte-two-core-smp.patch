@@ -158,7 +158,7 @@
 +	__builtin_arm_isb(ISB_SY);
 +	return __builtin_arm_rsr64("CNTPCT_EL0");
 +#elif defined(HAS_ACNTVCT)
- 	return __builtin_arm_rsr64("S3_4_c15_c10_6");
+ 	return __builtin_arm_rsr64("ACNTVCT_EL0");
  #elif __ARM_ARCH_8_6__
  	return __builtin_arm_rsr64("CNTVCTSS_EL0");
 @@ -2145,7 +2151,11 @@

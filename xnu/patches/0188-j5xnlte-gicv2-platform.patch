@@ -1,0 +1,233 @@
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 193845f..97e8652 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -25,7 +25,9 @@ OSDefineMetaClassAndStructors(SweetPlatformExpert, IODTPlatformExpert);
+ bool
+ SweetPlatformExpert::start(IOService *provider)
+ {
+-#if defined(A5XELTE)
++#if defined(J5XNLTE)
++	IOLog("J5XNLTE: starting device-tree platform expert\n");
++#elif defined(A5XELTE)
+ 	IOLog("A5XELTE: starting device-tree platform expert\n");
+ #else
+ 	IOLog("SWEET: starting device-tree platform expert\n");
+@@ -34,7 +36,9 @@ SweetPlatformExpert::start(IOService *provider)
+ 		return false;
+ 	}
+ 	registerService();
+-#if defined(A5XELTE)
++#if defined(J5XNLTE)
++	IOLog("J5XNLTE: platform expert registered\n");
++#elif defined(A5XELTE)
+ 	IOLog("A5XELTE: platform expert registered\n");
+ #else
+ 	IOLog("SWEET: platform expert registered\n");
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 2c3af25..a8a777f 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -34,12 +34,14 @@
+ 
+ const char * gIOKernelConfigTables =
+     "("
+-#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_A5XELTE)
++#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_A5XELTE) || defined(ARM64_BOARD_CONFIG_J5XNLTE)
+     "   {"
+     "     'IOClass'         = SweetPlatformExpert;"
+     "     'IOProviderClass' = IOPlatformExpertDevice;"
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+     "     'IONameMatch'     = 'samsung,a5xelte';"
++#elif defined(ARM64_BOARD_CONFIG_J5XNLTE)
++    "     'IONameMatch'     = 'samsung,j5xnlte';"
+ #else
+     "     'IONameMatch'     = 'xiaomi,sweet';"
+ #endif
+@@ -48,7 +50,7 @@ const char * gIOKernelConfigTables =
+     "   {"
+     "     'IOClass'         = SweetCPU;"
+     "     'IOProviderClass' = IOPlatformDevice;"
+-#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++#if defined(ARM64_BOARD_CONFIG_A5XELTE) || defined(ARM64_BOARD_CONFIG_J5XNLTE)
+     "     'IONameMatch'     = 'arm,cortex-a53';"
+ #else
+     "     'IONameMatch'     = 'qcom,kryo470';"
+@@ -70,6 +72,7 @@ const char * gIOKernelConfigTables =
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = IOCoreSurfaceRoot;"
+     "   },"
++#if !defined(ARM64_BOARD_CONFIG_J5XNLTE)
+     "   {"
+     "     'IOClass'         = AppleCLCD;"
+     "     'IOProviderClass' = IOPlatformDevice;"
+@@ -79,6 +82,7 @@ const char * gIOKernelConfigTables =
+     "     'IONameMatch'     = 'sweet,display';"
+ #endif
+     "   },"
++#endif /* !J5XNLTE */
+     "   {"
+     "     'IOClass'         = SweetHIDButtons;"
+     "     'IOProviderClass' = IOResources;"
+@@ -89,7 +93,7 @@ const char * gIOKernelConfigTables =
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = SweetHIDTouch;"
+     "   },"
+-#if !defined(ARM64_BOARD_CONFIG_A5XELTE)
++#if !defined(ARM64_BOARD_CONFIG_A5XELTE) && !defined(ARM64_BOARD_CONFIG_J5XNLTE)
+     "   {"
+     "     'IOClass'         = SweetBattery;"
+     "     'IOProviderClass' = IOResources;"
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 87fb8a8..a629193 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1856,7 +1856,7 @@ sleh_irq(arm_saved_state_t *state)
+ #endif
+ 
+ 
+-#if defined(A5XELTE) || defined(SWEET)
++#if defined(A5XELTE) || defined(SWEET) || defined(J5XNLTE)
+ 	/*
+ 	 * The non-secure timer and IPIs arrive as Group 1 IRQs.
+ 	 */
+@@ -1867,12 +1867,18 @@ sleh_irq(arm_saved_state_t *state)
+ 	iar = a5xelte_irq_ack();
+ 	#define A5_IRQ_EOI(value) a5xelte_irq_eoi((uint32_t)(value))
+ 	const uint32_t timer_intid = A5XELTE_VTIMER_INTID;
++#elif defined(J5XNLTE)
++	extern uint32_t j5xnlte_irq_ack(void);
++	extern void j5xnlte_irq_eoi(uint32_t);
++	iar = j5xnlte_irq_ack();
++	#define A5_IRQ_EOI(value) j5xnlte_irq_eoi((uint32_t)(value))
++	const uint32_t timer_intid = J5XNLTE_VTIMER_INTID;
+ #else
+ 	iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+ 	#define A5_IRQ_EOI(value) __builtin_arm_wsr64("ICC_EOIR1_EL1", (value))
+ 	const uint32_t timer_intid = sweet_vtimer_intid;
+ #endif
+-#if defined(A5XELTE)
++#if defined(A5XELTE) || defined(J5XNLTE)
+ 	/* GICv2 IAR bits [12:10] identify the SGI source CPU.  Only the
+ 	 * low ten bits are the INTID: CPU1's self-SGI1 reads as 0x401. */
+ 	uint32_t intid = (uint32_t)(iar & 0x3FF);
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index d3f8767..7fbbe90 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -329,6 +329,115 @@ pe_init_fiq(void)
+ 	__builtin_arm_dsb(DSB_SY);
+ 	__builtin_arm_isb(ISB_SY);
+ }
++#elif defined(J5XNLTE)
++/* msm8916 GIC-400: distributor 0x0b000000, CPU interface 0x0b002000,
++ * both non-secure Group 1. */
++static vm_offset_t j5_gicd_base;
++static vm_offset_t j5_gicc_base;
++static uint8_t j5_gic_cpu_masks[SWEET_SMP_MAX_CPUS];
++
++static uint32_t
++j5_gic_read32(vm_offset_t base, unsigned int offset)
++{
++	return *(volatile uint32_t *)(base + offset);
++}
++
++static void
++j5_gic_write32(vm_offset_t base, unsigned int offset, uint32_t value)
++{
++	*(volatile uint32_t *)(base + offset) = value;
++}
++
++uint32_t
++j5xnlte_irq_ack(void)
++{
++	return j5_gic_read32(j5_gicc_base, 0x00c);
++}
++
++void
++j5xnlte_irq_eoi(uint32_t iar)
++{
++	j5_gic_write32(j5_gicc_base, 0x010, iar);
++}
++
++void
++j5xnlte_send_self_ipi(void)
++{
++	__builtin_arm_dsb(DSB_ISHST);
++	j5_gic_write32(j5_gicd_base, 0xf00, (2U << 24) | 1U);
++}
++
++void
++j5xnlte_send_ipi(unsigned int logical)
++{
++	if (logical >= SWEET_SMP_MAX_CPUS || j5_gic_cpu_masks[logical] == 0) {
++		panic("j5xnlte: GICv2 target CPU%u unavailable", logical);
++	}
++	__builtin_arm_dsb(DSB_ISHST);
++	j5_gic_write32(j5_gicd_base, 0xf00,
++	    ((uint32_t)j5_gic_cpu_masks[logical] << 16) | 1U);
++}
++
++void
++j5xnlte_gic_diagnostics(unsigned int logical, const char *stage)
++{
++	kprintf("J5XNLTE GIC: CPU%u %s group=%08x enable=%08x pending=%08x "
++	    "cpu_ctl=%08x pmr=%08x hppir=%08x\n", logical, stage,
++	    j5_gic_read32(j5_gicd_base, 0x080),
++	    j5_gic_read32(j5_gicd_base, 0x100),
++	    j5_gic_read32(j5_gicd_base, 0x200),
++	    j5_gic_read32(j5_gicc_base, 0x000),
++	    j5_gic_read32(j5_gicc_base, 0x004),
++	    j5_gic_read32(j5_gicc_base, 0x018));
++}
++
++void
++pe_init_fiq(void)
++{
++	/* The boot CPU maps the controller before any secondary can start.
++	 * SecureDT iterators are not safe to run concurrently on secondaries. */
++	if (!j5_gicd_base) {
++		DTEntry entry;
++		const void *reg;
++		unsigned int size;
++		if (SecureDTLookupEntry(NULL, "/arm-io/gic", &entry) != kSuccess ||
++		    SecureDTGetProperty(entry, "reg", &reg, &size) != kSuccess ||
++		    size < 4 * sizeof(uint64_t)) {
++			panic("j5xnlte: missing GICv2 reg in ADT");
++		}
++		const uint64_t *r = reg;
++		vm_offset_t soc = pe_arm_get_soc_base_phys();
++		j5_gicd_base = ml_io_map(soc + r[0], r[1]);
++		j5_gicc_base = ml_io_map(soc + r[2], r[3]);
++	}
++	if (!j5_gicd_base || !j5_gicc_base) {
++		panic("j5xnlte: cannot map GICv2");
++	}
++	/* Banked ITARGETSR0 reveals this core's actual GIC CPU-interface bit. */
++	unsigned int logical = ml_get_cpu_number_local();
++	uint8_t mask = j5_gic_read32(j5_gicd_base, 0x800) & 0xff;
++	if (logical >= SWEET_SMP_MAX_CPUS || mask == 0 || (mask & (mask - 1)) != 0) {
++		panic("j5xnlte: invalid GICv2 CPU%u target mask 0x%x", logical, mask);
++	}
++	j5_gic_cpu_masks[logical] = mask;
++	/* INTID 20 is the virtual timer PPI; SGI 1 carries CPU signals. */
++	j5_gic_write32(j5_gicd_base, 0x080,
++	    j5_gic_read32(j5_gicd_base, 0x080) |
++	    (1U << J5XNLTE_VTIMER_INTID) | (1U << 1));
++	for (unsigned int i = 0; i < 32; i += 4) {
++		j5_gic_write32(j5_gicd_base, 0x400 + i, 0xa0a0a0a0U);
++	}
++	j5_gic_write32(j5_gicd_base, 0x100,
++	    (1U << J5XNLTE_VTIMER_INTID) | (1U << 1));
++	j5_gic_write32(j5_gicc_base, 0x004, 0xff); /* GICC_PMR */
++	j5_gic_write32(j5_gicc_base, 0x008, 0);    /* GICC_BPR */
++	j5_gic_write32(j5_gicc_base, 0x000,
++	    j5_gic_read32(j5_gicc_base, 0x000) | 1U);
++	j5_gic_write32(j5_gicd_base, 0x000,
++	    j5_gic_read32(j5_gicd_base, 0x000) | 1U);
++	__builtin_arm_dsb(DSB_SY);
++	__builtin_arm_isb(ISB_SY);
++}
+ #else
+ void
+ pe_init_fiq()

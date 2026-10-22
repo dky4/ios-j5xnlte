@@ -124,6 +124,83 @@ change.
   `research/bt28/xnu` tree is needed on another machine), no valid payload
   has been booted, and the screen is unproven.
 
+## 2026-10-22 — first XNU patches cut (0186-0191)
+
+- **XNU source verified as xnu-8796** (`config/MasterVersion` 22.6.0 =
+  macOS 13.5, matching the pinned DXB `MACOS_VERSION=13.5`), patched in
+  `/tmp/opencode/xnu-src` (git workspace, private outside git): base
+  `c97fa7a`, fake-xcrun staging run on Linux (libpthread-514.100.2,
+  BearSSL, hfs-627.100.6), donor patches **0001-0113 applied**
+  (`--unidiff-zero` from 0106 on; checkpoint `24c38ad`).
+- **Donor patch repairs (committed to the repo):** 0094/0095 truncated hunks
+  (headers 7,7 -> 6,6), 0112's pre-image register name
+  (`S3_4_c15_c10_6` -> `ACNTVCT_EL0`, verified against upstream
+  xnu-8796.141.3).
+- **Apply-failure diagnosis (resolved):** the 0106+ zero-context hunks (cut
+  with `diff -U0`) are rejected by plain `git apply`; they need
+  `git apply --unidiff-zero`. Verified by minimal patches.
+- **DXB build.sh silently skips failing patches** (`warning "Skipping patch
+  ... malformed"`), so the donor's green CI runs never applied 0106+ at all.
+  The workflow now seds build.sh's `git apply` flags to add `--unidiff-zero`.
+- **Six new patches committed** (series starts at
+  `xnu/patches/0186-j5xnlte-board-target.patch`):
+  - `0186` board target: `ARM64_BOARD_CONFIG_J5XNLTE` block in
+    `board_config.h` (MAX_L2_CLINE 6, MAX_CPUS 4, MAX_CPU_CLUSTERS 1,
+    CORE_NCTRS 6 placeholder), new `pexpert/pexpert/arm64/J5XNLTE.h`
+    (J5XNLTE 1 + SWEET 1 "reuse donor's SoC-neutral early services",
+    HAS_GIC_V3 0, `__ARM_V8_CRYPTO_EXTENSIONS__ 0`, J5XNLTE_VTIMER_INTID 20,
+    PLATFORM_PANIC_LOG_DISABLED), new `config/MASTER.arm64.j5xnlte`
+    (mirrors the a5xelte donor configuration), `MakeInc.def` SUPPORTED +
+    `MACHINE_FLAGS_ARM64_J5XNLTE = -DARM64_BOARD_CONFIG_J5XNLTE
+    -mcpu=cortex-a53 -march=armv8-a` and the `ifeq filter` gate.
+  - `0187` entry marker: u32 `0x584e5531` ("XNU1") via MOV64 x10/x11 and
+    `str w11, [x10]` + `dsb sy` at IMEM `0x146bf65c` next to the A5XELTE
+    marker block in `start.s` (an 8-byte store does not transfer: the word
+    is 4-byte aligned and Device memory); the five SM7150-hardware gates
+    extended with `&& !defined(J5XNLTE)` (`start.s:547`, `start.s:734`,
+    `arm_vm_init.c:1828/2182/2191`); a `#elif defined(J5XNLTE)` no-op
+    console branch in `sweet_early.c` before `#elif defined(SWEET)`.
+  - `0188` GICv2 platform: `pe_fiq.c` `#if defined(J5XNLTE)` GIC-400 branch
+    (ADT `/arm-io/gic` reg relative to `pe_arm_get_soc_base_phys()`,
+    INTID enable `(1 << 20) | (1 << 1)`, ITARGETSR banked mask,
+    `j5xnlte_irq_ack/eoi/send_self_ipi/send_ipi/gic_diagnostics`);
+    `sleh.c` `#elif defined(J5XNLTE)` ack/eoi sub-branch with
+    `J5XNLTE_VTIMER_INTID` and the GICv2 IAR mask 0x3FF;
+    `KernelConfigTables.cpp` matches `'samsung,j5xnlte'` +
+    `'arm,cortex-a53'` and excludes AppleCLCD/SweetBattery on the J5;
+    `SweetPlatformExpert.cpp` J5XNLTE log strings.
+  - `0189` architected timer: `gTimerBase == 0` returns 1 for J5XNLTE
+    (CNTV has no MMIO timer base; virtual timer PPI 20 is in the GIC).
+  - `0190` CPU identity: SweetCPU J5XNLTE externs/CPU_PORT_NAME, msm8916
+    topology guard (MPIDR == logical, 4 cores one cluster), cpuName
+    "Cortex-A53", signalCPU self-only (first trial CPU0-only; the boot CPU
+    never takes `SweetCPU::startCPU` — `cpu.c:cpu_start()` handles
+    `cpu == cpu_number()` via `cpu_machine_init()`).
+  - `0191` portable-crypto/shared-service gates: all 48
+    `ARM64_BOARD_CONFIG_SWEET || ARM64_BOARD_CONFIG_A5XELTE` flag gates
+    across 37 files extended with `|| defined(ARM64_BOARD_CONFIG_J5XNLTE)`
+    (on the J5 build only `ARM64_BOARD_CONFIG_J5XNLTE` is defined from
+    MACHINE_FLAGS, so these are required for the portable crypto,
+    pthread and userland-bridge paths); the `IOService.cpp` assert
+    exclusion extended to skip it on the J5 too.
+- **SWEET-gate audit (46 bare `defined(SWEET)` gates):** all SoC-neutral
+  services (kmem RNG, entropy ccdigest, prng_random, panic copy, SMP
+  opt-in clamp, cpu.c VA cleans, IOService includes, trustcache no-AMFI,
+  SweetCPU IOCPU bridge). `pe_fiq.c`'s SWEET GICv3 section is inside
+  `#if HAS_GIC_V3` (excluded with 0). The only SM7150-hardware exclusion
+  points are the sweet_early.c chain and the five 0082-pattern gates
+  extended in 0187.
+- **Series validation:** the workspace applied 0186-0191 from the cut
+  patches in sequence and the resulting tree is **byte-identical** to the
+  committed chain (round-trip exact, plain `git apply`).
+- **CI wiring (repo changes, uncommitted):** `0019-stage-libpthread.sh`
+  config case extended with J5XNLTE; `.github/workflows/xnu.yml` seds
+  build.sh's `git apply` to `--unidiff-zero` and defaults
+  `MACHINE_CONFIG` to `J5XNLTE` for `j5xnlte`-branch pushes.
+- **No device claims:** these are build-tree changes validated by patch
+  round-trip only. No CI kernel exists yet, no payload has been booted,
+  and no XNU marker or screen report has been observed on the phone.
+
 ## Open device-test questions
 
 - Does lk2nd hand off a usable framebuffer (address/stride), and when?
@@ -140,10 +217,16 @@ change.
 
 ## Next verified milestone
 
-Cut the first XNU patches (J5XNLTE entry marker mirroring a5xelte `0082`,
-board target mirroring `0085`, GICv2/timer mirroring `0086`/`0099` with
-virtual-timer-intid 20 and 4-core topology), build them in CI with
-`machine_config: J5XNLTE`, pack a payload with `tools/mkpayload.py` +
-`tools/mkadt_j5xnlte.py`, and run the first `fastboot boot` trial of a real
-payload: the shim should pass every validation (the cpio diagnostic proved
-the stage-2 path) and jump to XNU's entry point.
+1. Commit and push to `j5xnlte` to trigger the CI build (`MACHINE_CONFIG`
+   defaults to J5XNLTE on the branch; all patches apply with
+   `--unidiff-zero` after the build-script sed). Check the run and the
+   `xnu-kernel` artifact via GitHub web (`gh` is not installed).
+2. Once a kernel artifact exists: pack a real payload with
+   `tools/mkpayload.py` + `tools/mkadt_j5xnlte.py` and run the first
+   `fastboot boot` trial of a real kernel payload. The IMEM word at
+   `0x146bf65c` should read `0x584e5531` ("XNU1") via
+   `fastboot oem debug readl 0x146bf65c` — distinct from the shim's
+   "J5X" stage markers.
+3. Then: MDP5+DSI console bring-up (the J5 branch in `sweet_early.c` is a
+   no-op until the framebuffer exists), eMMC/SDHCI for the rootfs, and the
+   smc-only PSCI probe before relying on PSCI for XNU's secondary cores.
