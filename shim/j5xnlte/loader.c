@@ -65,7 +65,7 @@ _Static_assert(__builtin_offsetof(struct boot_args, Video) == 40, "boot_args lay
 _Static_assert(__builtin_offsetof(struct boot_args, CommandLine) == 108, "boot_args layout");
 _Static_assert(sizeof(struct boot_args) == 736, "boot_args layout");
 
-#if !defined(J5XNLTE_DIAG) && !defined(J5XNLTE_DIAG_FB)
+#if !defined(J5XNLTE_DIAG) && !defined(J5XNLTE_DIAG_FB) && !defined(J5XNLTE_DIAG_SMC)
 #define J5XNLTE_FULL_LOADER 1
 #else
 #undef J5XNLTE_FULL_LOADER
@@ -204,6 +204,43 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 	for (;;)
 		__asm__ volatile("wfe");
 }
+#elif defined(J5XNLTE_DIAG_SMC)
+/*
+ * PSCI probe (DIAG=3): CPU_ON via smc #0 alone, without the hvc fallback
+ * that wedged the earlier SYSTEM_RESET pair in the TZ-milestone EL1 state.
+ * Target core 1, entry = a wfe loop, context 0. IMEM word layout:
+ *   0x0860065c: return value (0 = PSCI success, negative = PSCI error
+ *   code, -1 = NOT_SUPPORTED), 0x4a355800 = the probe reached (written
+ *   before the smc; that value with a hang means the smc itself hung).
+ * PS_HOLD powerdown follows the smc.
+ */
+static void psci_loop(void)
+{
+	for (;;)
+		__asm__ volatile("wfe");
+}
+
+void __attribute__((noreturn)) shim_main(uintptr_t dtb)
+{
+	(void)dtb;
+	volatile uint32_t *mark = (volatile uint32_t *)IMEM_MARK;
+	*mark = 0x4a355800u;
+	__asm__ volatile("dsb sy" ::: "memory");
+
+	register long x0 __asm__("x0") = 0x84000003UL;	/* PSCI CPU_ON */
+	register long x1 __asm__("x1") = 1UL;		/* target core 1 */
+	register long x2 __asm__("x2") = (long)psci_loop;
+	register long x3 __asm__("x3") = 0UL;		/* context */
+	__asm__ volatile("smc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3) : "memory", "cc");
+	*mark = (volatile uint32_t)(uint32_t)x0;
+	__asm__ volatile("dsb sy" ::: "memory");
+
+	/* MPM2_MPM_PS_HOLD (target/msm8916 iomap): low = PMIC powerdown. */
+	*(volatile uint32_t *)0x004ab000UL = 0;
+	__asm__ volatile("dsb sy" ::: "memory");
+	for (;;)
+		__asm__ volatile("wfe");
+}
 #else
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
@@ -275,7 +312,23 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 	ba->physBase = p->phys_base;
 	ba->memSize = p->mem_size;
 	ba->topOfKernelData = ba_pa + PAGE_SIZE;
-	/* No fbcon yet: Video stays zero. The J5's MDP5 display is later work. */
+	/* lk2nd.pass-simplefb publishes the continuous splash as
+	 * /chosen/framebuffer; hand it to xnu (v_baseAddr stays physical —
+	 * the splash framebuffer lives in DRAM below the kernel window and
+	 * keeps displaying while the MDP keeps refreshing through the
+	 * jump). Zero if lk2nd detected no splash. */
+	{
+		uint32_t fb_base, fb_size, fb_w, fb_h, fb_stride, fmt4 = 0;
+		if (fdt_chosen_fb(dtb, &fb_base, &fb_size, &fb_w, &fb_h, &fb_stride, &fmt4)) {
+			ba->Video.v_baseAddr = fb_base;
+			ba->Video.v_display = 0;
+			ba->Video.v_rowBytes = fb_stride;
+			ba->Video.v_width = fb_w;
+			ba->Video.v_height = fb_h;
+			ba->Video.v_depth = fmt4 == 0x78387238u /* "x8r8" */ ? 32 :
+					     fmt4 == 0x72356736u /* "r5g6" */ ? 16 : 24;
+		}
+	}
 	ba->deviceTreeP = p->virt_base + (adt_pa - p->phys_base);	/* VA: xnu reads it with the MMU on */
 	ba->deviceTreeLength = (uint32_t)p->adt_size;
 	for (unsigned i = 0; i < BOOT_LINE_LENGTH; ++i)

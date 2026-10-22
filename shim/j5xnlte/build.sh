@@ -12,11 +12,12 @@ mkdir -p out
 : "${DTC:=dtc}"
 CFLAGS="-O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie -nostdlib -fno-asynchronous-unwind-tables -mgeneral-regs-only -mstrict-align -march=armv8-a -Wall -Wextra -Werror"
 # DIAG=1 builds the entry probe, DIAG=2 the lk2nd.pass-simplefb display
-# probe instead of the full loader (see loader.c: J5XNLTE_DIAG,
-# J5XNLTE_DIAG_FB).
+# probe, DIAG=3 the PSCI CPU_ON smc probe instead of the full loader (see
+# loader.c: J5XNLTE_DIAG, J5XNLTE_DIAG_FB, J5XNLTE_DIAG_SMC).
 case "${DIAG:-}" in
 1) CFLAGS="$CFLAGS -DJ5XNLTE_DIAG" ;;
 2) CFLAGS="$CFLAGS -DJ5XNLTE_DIAG_FB" ;;
+3) CFLAGS="$CFLAGS -DJ5XNLTE_DIAG_SMC" ;;
 esac
 "$CC" $CFLAGS -c start.S -o out/start.o
 "$CC" $CFLAGS -c loader.c -o out/loader.o
