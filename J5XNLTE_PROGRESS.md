@@ -411,53 +411,40 @@ change.
 
 ## Next verified milestone
 
-1. CI milestone DONE (marker fix): run 39847270182 (head `d128e08`)
-   succeeded and produced `kernel.development.j5xnlte` in the `xnu-kernel`
-   artifact (17,051,920 bytes, sha256 `cf5d866479811d60c67d45744eec7a1740203fbe6d28bc55da1864b82125d3f9`),
-   verified: Mach-O 0xfeedfacf, cputype 0x100000c (arm64), `__TEXT` at
-   `0xfffffff007004000` (compact 0193 link address), 10 kernel segments,
-   LC_UNIXTHREAD entry `0xfffffff007425488`, kernel_end `0xfffffff0080a4000`
-   (page aligned), no LC_DYLD_CHAINED_FIXUPS (static link, fixups walked).
-2. Real-payload trial — the payload and boot image are re-packed with the
-   marker-fix kernel:
-   - `/tmp/opencode/payload-xnu-j5xnlte.bin`: SWEETXNU payload,
-     virt_base `0xfffffff006000000`, entry `0xfffffff007425488`,
-     kernel_end `0xfffffff0080a4000`, 10 segments, 16,469,088 bytes,
-     phys_base/mem_size from the ADT (`0x88000000`/`0x78000000`).
-   - `shim/j5xnlte/out/j5xnlte-boot.img` (16,510,976 bytes): lk2nd
-     loader + the payload as ramdisk + the minimal DTB, boot.img v0,
-     cmdline `lk2nd.pass-simplefb` (re-verified: ramdisk_size 16,469,088,
-     kernel_addr 0x8000).
-   - Trial: `fastboot boot shim/j5xnlte/out/j5xnlte-boot.img`, then read
-     the IMEM word via `fastboot oem debug readl 0x0860065c` — expect
-     `0x584e5531` ("XNU1") once XNU reaches the marker write site (the
-     loader's `0x4a355800` appears if XNU wedges before its own marker);
-     `fastboot reboot` restores Android (nothing is written).
-3. Display probe (DIAG=2, committed `0d8e806`): re-pack with
-   `DIAG=2 sh shim/j5xnlte/build.sh /tmp/opencode/payload-xnu-j5xnlte.bin`
-   — wait, DIAG=2 replaces the loader with the display probe, so its
-   ramdisk still needs the valid payload (any payload works: the probe
-   only reads the DTB). Trial: boot, then read IMEM words `0x0860065c`
-   (fb base), `0x660` (fb size), `0x664` (width), `0x668` (height), `0x66c`
-   (stride), `0x670` (format ASCII) — or `0x4a355801` = node missing.
-   Host round-trip verified: `fdt_chosen_fb` parses the geometry and
-   format correctly.
+1. CI re-run PENDING (DRAM-marker move): the `xnu/patches/**` paths filter
+   auto-triggers a kernel rebuild on push. The start.s marker store now
+   targets scratch DRAM `0x92000000` (IMEM `0x0860065c` does not persist —
+   see the 2026-10-23 section). For history: the previous marker-fix run
+   39847270182 (head `d128e08`) succeeded and produced
+   `kernel.development.j5xnlte` (17,051,920 bytes, sha256
+   `cf5d866479811d60c67d45744eec7a1740203fbe6d28bc55da1864b82125d3f9`),
+   Mach-O 0xfeedfacf, cputype 0x100000c (arm64), `__TEXT` at
+   `0xfffffff007004000`, entry `0xfffffff007425488`, kernel_end
+   `0xfffffff0080a4000`, 10 segments, static link.
+2. Re-pack the payload from the NEW CI kernel (the currently packed
+   `/tmp/opencode/payload-xnu-j5xnlte.bin` still holds the IMEM-marker
+   kernel), then `sh shim/j5xnlte/build.sh <payload>` — shim stage markers
+   and the DIAG probes already write scratch DRAM (all four modes compile
+   clean, `-Wall -Wextra -Werror`).
+3. User trials via `shim/j5xnlte/trials.sh` (the user runs them; short
+   trials, AMOLED burn-in):
+   - `persist` FIRST: fastboot writel `0x4a355800` at `0x92000000` →
+     `fastboot reboot` → readl — verifies DRAM survives lk2nd's hard reset
+     (IMEM failed exactly this test on 2026-10-23).
+   - `a`: real payload — expect `0x584e5531` ("XNU1") at `0x92000000` after
+     the force-reboot once XNU reaches its marker write site; the loader's
+     `0x4a355800` = XNU wedged before its own marker.
+   - `b` (DIAG=2): fb facts at `0x92000000`+4..+20 (size/width/height/
+     stride/format); `0x4a355801` = node missing.
+   - `c` (DIAG=3): PSCI CPU_ON via smc #0 alone; return value at
+     `0x92000000` (0 = success, negative = PSCI error), PS_HOLD powerdown
+     follows.
 4. Then: MDP5+DSI console bring-up (the J5 branch in `sweet_early.c` is a
    no-op until the framebuffer exists), eMMC/SDHCI for the rootfs, and the
    smc-only PSCI probe before relying on PSCI for XNU's secondary cores.
-   Probes and handoff ready (all static builds pass, `-Wall -Wextra
-   -Werror`):
-   - **Full loader (committed `9c64e9f`)**: fills boot_args Video from
-     `/chosen/framebuffer` (v_baseAddr physical, depth from the format) —
-     xnu inherits the continuous splash without MDP5 register work. The
-     currently packed `shim/j5xnlte/out/j5xnlte-boot.img` (16,510,976
-     bytes) is this loader + the marker-fix payload.
-   - **DIAG=3 PSCI probe (committed `9c64e9f`)**: PSCI CPU_ON (0x84000003)
-     via smc #0 ALONE (no hvc fallback — the smc→hvc SYSTEM_RESET pair
-     wedged). Signals at IMEM `0x0860065c`: `0` = CPU_ON success (PSCI
-     usable from this state), negative = PSCI error (-1 = NOT_SUPPORTED),
-     `0x4a355800` with a hang = the smc itself hung. PS_HOLD powerdown
-     follows the smc. Pack with `DIAG=3 sh shim/j5xnlte/build.sh`.
+   - **Full loader**: fills boot_args Video from `/chosen/framebuffer`
+     (v_baseAddr physical, depth from the format) — xnu inherits the
+     continuous splash without MDP5 register work.
    - Console bring-up simplification: if the MDP keeps refreshing through
      the jump, the screen console reduces to writing text into the splash
      framebuffer memory (no MDP5 registers at all) — the a5xelte `0089`
@@ -519,3 +506,46 @@ change.
   initialized by the stock bootchain) is device evidence; a DIAG probe can
   write the fb facts (base/width/height/stride) into IMEM words at
   `0x0860065c`+ and read them back per-word.
+
+## 2026-10-23 — IMEM does not persist; markers moved to scratch DRAM 0x92000000
+
+- **Device result (lk2nd fastboot, unmodified installed lk2nd):**
+  `fastboot oem debug readl 0x0860065c` reads OKAY — the readl-reboot bug
+  (data abort on the unmapped `0x146bf65c`) is gone.
+- **IMEM persistence FAILED:** lk2nd's `oem debug writel 0x0860065c
+  0x4a355800` + readl read back `0x4a355800` in-session, but the word is
+  `0x00000000` after any warm cycle:
+  - a clean single cycle (boot payload → force-reboot POWER ~10 s →
+    VOLUMEDOWN fastboot → readl, no Android in between), and
+  - lk2nd's own `fastboot reboot`.
+  So even the loader's stage-0 marker did not survive; the boot ROM/SBL
+  likely re-initializes IMEM on every boot. Restart-reason persistence on
+  msm8916 relies on the PMIC spare (`USE_PON_REBOOT_REG=1`), not IMEM.
+- **Replacement home: scratch DRAM `0x92000000`** (lk2nd source):
+  `target/msm8916/rules.mk` sets `SCRATCH_ADDR 0x90000000`;
+  `platform/msm8916/platform.c` maps the whole 256 MB; `fastboot_init(scratch,
+  256M)` (aboot.c:5737) makes it the download buffer — our 16 MB image only
+  reaches `0x90000000+16 MB`; lk2nd's ramoops is the last 512 KB
+  (`0x9FF80000..`, dump then console) and its simplefb relocate target is
+  `≈0x9F580000` (not requested). Nothing writes `0x92000000`, and DRAM
+  survives warm resets (the ramoops design relies on it).
+- **Markers moved** (compile-verified: shim disassembly shows
+  `mov x1/x2, #0x92000000`, zero `0x860065c` occurrences):
+  - `shim/j5xnlte/loader.c`: `DRAM_MARK 0x92000000UL` for all stage writes,
+    the DIAG=2 fb words (+4 size, +8 width, +12 height, +16 stride, +20
+    format) and the DIAG=3 PSCI return value.
+  - `xnu/patches/0187-j5xnlte-entry-marker.patch`: start.s "XNU1"
+    `0x584e5531` store → `0x92000000`; hunk counts corrected
+    (`+544,21`, was a stale 17).
+  - `shim/j5xnlte/trials.sh`: `MARK=0x92000000` everywhere; `persist` now
+    tests DRAM across `fastboot reboot`; trial B reads the fb words at
+    `0x92000000`+4..+20.
+- **Static builds pass:** all four modes (full loader, DIAG=1/2/3) compile
+  clean (`-Wall -Wextra -Werror`, no ABS64 relocations); the active trial-A
+  image re-packed (`shim/j5xnlte/out/j5xnlte-boot.img`, 16,510,976 bytes,
+  cmdline `lk2nd.pass-simplefb`) — its ramdisk payload still holds the OLD
+  IMEM-marker kernel until the CI re-run lands, then re-pack from the new
+  kernel.
+- **Next:** CI re-run → re-pack payload → user trials `persist` (DRAM
+  across lk2nd's reboot) then `a` (`0x584e5531` at `0x92000000`), then `b`
+  (fb facts) and `c` (PSCI CPU_ON).

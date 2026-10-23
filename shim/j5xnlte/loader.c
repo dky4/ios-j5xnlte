@@ -10,21 +10,22 @@
  * pages behind the kernel, and jump to the entry point with the MMU and
  * caches off, x0 = boot_args (physical).
  *
- * There is no console: a failure writes its stage number to IMEM at
- * 0x0860065c (0x4a355800 | stage, "J5XN" + stage), waits stage * 5 seconds
+ * There is no console: a failure writes its stage number to DRAM at
+ * 0x92000000 (0x4a355800 | stage, "J5XN" + stage), waits stage * 5 seconds
  * and resets; the reboot delay is the first observable. The marker word is
- * lk2nd's RESTART_REASON_ADDR (MSM_SHARED_IMEM_BASE 0x08600000 + 0x65c):
- * lk2nd maps only this IMEM base, reads the word on warm boots and never
- * writes it (reboot modes go to the PMIC spare, USE_PON_REBOOT_REG=1), so
- * it stays readable through `fastboot oem debug readl`. The earlier
- * 0x146bf65c (the downstream dts msm-imem) is not mapped by lk2nd: reading
- * it takes a data abort and warm-reboots into Android (first-trial
- * finding). See docs/j5xnlte-bringup.md.
+ * 32 MB into lk2nd's 256 MB scratch region (SCRATCH_ADDR 0x90000000,
+ * target/msm8916/rules.mk): lk2nd maps the whole region and its download
+ * buffer only reaches 0x90000000+16 MB with our image, and lk2nd's ramoops
+ * (scratch + 256M - 512K) starts at 0x9FF80000, so nothing scrubs it. DRAM
+ * survives warm resets; the earlier IMEM marker at 0x0860065c did NOT
+ * persist across resets (lk2nd writel/readl work in-session, but the word
+ * is 0 after a reboot - the boot ROM/SBL likely re-initializes IMEM). See
+ * docs/j5xnlte-bringup.md.
  */
 #include <stdint.h>
 #include "../fdt.h"
 
-#define IMEM_MARK		0x0860065cUL	/* RESTART_REASON_ADDR: lk2nd's mapped imem@08600000 + 0x65c */
+#define DRAM_MARK		0x92000000UL	/* scratch DRAM: lk2nd-mapped, nothing scrubs it */
 #define RAM_BASE		0x80000000UL	/* DRAM start */
 #define RAM_END			0x100000000UL	/* 2 GiB */
 #define PAGE_SIZE		4096UL
@@ -123,8 +124,8 @@ static void delay(unsigned s)
  * a dedicated probe (stage markers + delay elapsed, then no powerdown), so
  * it stays out of the reset path. lk2nd itself resets through the PMIC
  * PSHOLD warm-reset path, which needs SPMI (pm8x41_reset_configure); a
- * warm reset would keep the IMEM marker readable via lk2nd's
- * `fastboot oem debug readl 0x0860065c` and is later work if needed. */
+ * warm reset would keep the scratch-DRAM marker readable via lk2nd's
+ * `fastboot oem debug readl 0x92000000` and is later work if needed. */
 static void __attribute__((noreturn)) fail_reset(void)
 {
 	*(volatile uint32_t *)0x004ab000UL = 0;
@@ -137,9 +138,9 @@ static void __attribute__((noreturn)) fail_reset(void)
 #ifdef J5XNLTE_FULL_LOADER
 static void __attribute__((noreturn)) fail(int stage)
 {
-	/* IMEM keeps the marker across the warm reset; the stage number is
+	/* DRAM keeps the marker across the warm reset; the stage number is
 	 * observable as the reboot delay (stage * 5 s). */
-	*(volatile uint32_t *)IMEM_MARK = 0x4a355800u | (uint32_t)stage;
+	*(volatile uint32_t *)DRAM_MARK = 0x4a355800u | (uint32_t)stage;
 	__asm__ volatile("dsb sy" ::: "memory");
 	delay(stage * 5);
 	fail_reset();
@@ -149,16 +150,17 @@ static void __attribute__((noreturn)) fail(int stage)
 #ifdef J5XNLTE_DIAG
 /*
  * Diagnostic build (DIAG=1): entry probe only. Writes the stage-1 marker
- * to the restart-reason word, then drops PS_HOLD (0x4ab000): the PM8916
+ * to the scratch-DRAM marker word (0x92000000), then drops PS_HOLD
+ * (0x4ab000): the PM8916
  * default PSHOLD action powers the phone off. Observable: the phone turns
- * OFF ~1 s after `fastboot boot` (the shim runs; PSCI, timers and IMEM
+ * OFF ~1 s after `fastboot boot` (the shim runs; PSCI, timers and DRAM
  * are all fine) or wedges (the shim never started: entry or the TZ
  * milestone call failed). No timers, no PSCI, no SPMI needed.
  */
 void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 {
 	(void)dtb;
-	*(volatile uint32_t *)IMEM_MARK = 0x4a355800u | 1u;
+	*(volatile uint32_t *)DRAM_MARK = 0x4a355800u | 1u;
 	__asm__ volatile("dsb sy" ::: "memory");
 	/* MPM2_MPM_PS_HOLD (target/msm8916 iomap): low = PMIC powerdown. */
 	*(volatile uint32_t *)0x004ab000UL = 0;
@@ -171,30 +173,30 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
  * Display probe (DIAG=2): lk2nd.pass-simplefb publishes the framebuffer as
  * /chosen/framebuffer@<base> (compatible "simple-framebuffer", boot_type
  * ARM64 only — BOOT_DOWNSTREAM/BOOT_LK2ND skip); dump the display facts
- * into IMEM words and drop PS_HOLD. IMEM word layout, all readable
- * per-word via `fastboot oem debug readl`:
- *   0x0860065c: fb base, +4: fb size, +8: width, +12: height,
+ * into scratch-DRAM words and drop PS_HOLD. Word layout at 0x92000000,
+ * all readable per-word via `fastboot oem debug readl`:
+ *   0x92000000: fb base, +4: fb size, +8: width, +12: height,
  *   +16: stride, +20: format (first 4 chars as ASCII).
- * 0x4a355801 at 0x5c = the node is missing (lk2nd detected no continuous
- * splash, or the cmdline arg did not flow).
+ * 0x4a355801 at 0x92000000 = the node is missing (lk2nd detected no
+ * continuous splash, or the cmdline arg did not flow).
  */
 void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 {
 	uint32_t base = 0, size = 0, width = 0, height = 0, stride = 0, fmt4 = 0;
 
 	/* Stage 0: the probe itself is running. */
-	*(volatile uint32_t *)IMEM_MARK = 0x4a355800u;
+	*(volatile uint32_t *)DRAM_MARK = 0x4a355800u;
 	__asm__ volatile("dsb sy" ::: "memory");
 
 	if (fdt_chosen_fb(dtb, &base, &size, &width, &height, &stride, &fmt4)) {
-		*(volatile uint32_t *)IMEM_MARK = base;
-		*(volatile uint32_t *)(IMEM_MARK + 4) = size;
-		*(volatile uint32_t *)(IMEM_MARK + 8) = width;
-		*(volatile uint32_t *)(IMEM_MARK + 12) = height;
-		*(volatile uint32_t *)(IMEM_MARK + 16) = stride;
-		*(volatile uint32_t *)(IMEM_MARK + 20) = fmt4;
+		*(volatile uint32_t *)DRAM_MARK = base;
+		*(volatile uint32_t *)(DRAM_MARK + 4) = size;
+		*(volatile uint32_t *)(DRAM_MARK + 8) = width;
+		*(volatile uint32_t *)(DRAM_MARK + 12) = height;
+		*(volatile uint32_t *)(DRAM_MARK + 16) = stride;
+		*(volatile uint32_t *)(DRAM_MARK + 20) = fmt4;
 	} else {
-		*(volatile uint32_t *)IMEM_MARK = 0x4a355801u;
+		*(volatile uint32_t *)DRAM_MARK = 0x4a355801u;
 	}
 	__asm__ volatile("dsb sy" ::: "memory");
 
@@ -208,10 +210,10 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 /*
  * PSCI probe (DIAG=3): CPU_ON via smc #0 alone, without the hvc fallback
  * that wedged the earlier SYSTEM_RESET pair in the TZ-milestone EL1 state.
- * Target core 1, entry = a wfe loop, context 0. IMEM word layout:
- *   0x0860065c: return value (0 = PSCI success, negative = PSCI error
- *   code, -1 = NOT_SUPPORTED), 0x4a355800 = the probe reached (written
- *   before the smc; that value with a hang means the smc itself hung).
+ * Target core 1, entry = a wfe loop, context 0. DRAM word layout at
+ * 0x92000000: return value (0 = PSCI success, negative = PSCI error
+ * code, -1 = NOT_SUPPORTED), 0x4a355800 = the probe reached (written
+ * before the smc; that value with a hang means the smc itself hung).
  * PS_HOLD powerdown follows the smc.
  */
 static void psci_loop(void)
@@ -223,7 +225,7 @@ static void psci_loop(void)
 void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 {
 	(void)dtb;
-	volatile uint32_t *mark = (volatile uint32_t *)IMEM_MARK;
+	volatile uint32_t *mark = (volatile uint32_t *)DRAM_MARK;
 	*mark = 0x4a355800u;
 	__asm__ volatile("dsb sy" ::: "memory");
 
@@ -255,7 +257,7 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 	uint64_t rd_start, rd_end;
 
 	/* Stage 0: the shim itself is running (an early wedge still has it). */
-	*(volatile uint32_t *)IMEM_MARK = 0x4a355800u;
+	*(volatile uint32_t *)DRAM_MARK = 0x4a355800u;
 	__asm__ volatile("dsb sy" ::: "memory");
 
 	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||

@@ -19,8 +19,9 @@ device; every trial boots with lk2nd's Android fastboot.
 | GPU | Adreno 306 (a2xx class, later milestone) |
 | Storage | eMMC on SDHCI `sdhc_1` `@0x07824900` (core) / `@0x07824000` (host), bus-width 8, `qcom,sdhci-msm-v4` |
 | USB | `@0x078d9000`, `qcom,ci-hdrc` peripheral + `qcom,ehci-host` |
-| IMEM | lk2nd maps only `@0x08600000` (1 MB; `RESTART_REASON_ADDR` `0x0860065c`, read on warm boots, never written — reboot modes go to the PMIC spare). The downstream dts `qcom,msm-imem@0x146bf000` (`0x146bf65c`) is real but **not mapped by lk2nd**: lk2nd reads of it data-abort |
+| IMEM | lk2nd maps only `@0x08600000` (1 MB; `RESTART_REASON_ADDR` `0x0860065c`, read on warm boots, never written — reboot modes go to the PMIC spare). The downstream dts `qcom,msm-imem@0x146bf000` (`0x146bf65c`) is real but **not mapped by lk2nd**: lk2nd reads of it data-abort. **IMEM words do NOT persist across resets** (lk2nd writel/readl work in-session; the word is 0 after any reboot — the boot ROM/SBL re-initializes IMEM). Markers live in scratch DRAM instead (see the memory map below) |
 | PSHOLD | `@0x004ab000` |
+| Scratch DRAM | lk2nd maps `SCRATCH_ADDR` `0x90000000` for the full 256 MB and uses it as the fastboot download buffer; its ramoops (scratch + 256M − 512K) starts at `0x9FF80000`. `0x92000000` (32 MB in; past our 16 MB download image) is the marker home: lk2nd-mapped, untouched by our boots, nothing scrubs it, and **DRAM survives warm resets** |
 
 Values marked "not yet measured" must be confirmed from EL1 on the phone before
 they are treated as device facts; record those confirmations in
@@ -70,9 +71,9 @@ The J5 shim has no console: whether lk2nd leaves a usable framebuffer is an
 open device-test question. Until a display path exists:
 
 - **Loader failure** (before the jump): the shim writes the stage number to
-  IMEM at `0x0860065c` (`0x4a355800 | stage`, "J5XN" + stage; lk2nd's
-  `RESTART_REASON_ADDR`, mapped and read on warm boots, never written by
-  lk2nd), waits
+  scratch DRAM at `0x92000000` (`0x4a355800 | stage`, "J5XN" + stage;
+  lk2nd's mapped 256 MB scratch region, nothing scrubs it, DRAM survives
+  warm resets), waits
   `stage * 5` seconds and drops `PS_HOLD` (`0x4ab000`) — the PM8916 default
   PSHOLD action powers the phone off. The observable is the powerdown
   delay: ~5 s per failure stage (see `shim/j5xnlte/README.md` for the stage
@@ -83,7 +84,9 @@ open device-test question. Until a display path exists:
 - **lk2nd's own log** (not XNU's): `fastboot oem log && fastboot get_staged
   OUT`.
 - **lk2nd peek/poke** (while fastboot is alive): `fastboot oem debug readl
-  0x0860065c` reads the restart-reason word; once the PMIC warm-reset path
+  0x92000000` reads the scratch-DRAM marker word; the earlier IMEM word
+  `0x0860065c` is writable/readable in-session but does NOT survive a
+  reboot, so markers live in scratch DRAM. Once the PMIC warm-reset path
   (SPMI, `pm8x41_reset_configure(PON_PSHOLD_WARM_RESET)`) is implemented, a
   warm reset keeps the marker readable.
 - Later options once XNU runs: a screen console from the MDP5 bring-up, then
@@ -116,6 +119,26 @@ open device-test question. Until a display path exists:
 - Timer reads work at EL1: the full shim's 10 s `CNTFRQ`/`CNTPCT` delay
   was accurate (no fallback needed).
 
+### Device findings (2026-10-23, marker persistence)
+
+- `fastboot oem debug readl 0x0860065c` reads OKAY with the unmodified
+  installed lk2nd (the readl-reboot bug is fixed: device-verified, no more
+  data-abort reboots into Android).
+- **IMEM words do NOT persist across resets**: lk2nd's
+  `oem debug writel 0x0860065c` writes and readl reads `0x4a355800`
+  in-session, but the word is `0x00000000` after any warm cycle — including
+  a clean single cycle (boot payload → force-reboot → read, no Android in
+  between) and lk2nd's own `fastboot reboot`. The boot ROM/SBL likely
+  re-initializes IMEM on every boot; restart-reason persistence relies on
+  the PMIC spare (`USE_PON_REBOOT_REG=1`), not IMEM.
+- Replacement home: **scratch DRAM `0x92000000`** — 32 MB into lk2nd's
+  `SCRATCH_ADDR 0x90000000` (mapped for the full 256 MB). lk2nd uses it as
+  the fastboot download buffer, but our 16 MB image only reaches
+  `0x90000000+16 MB`; lk2nd's ramoops starts at `0x9FF80000`; nothing else
+  writes the word. DRAM survives warm resets (the ramoops design relies on
+  it). All markers (shim stage codes, XNU `0x584e5531`) moved there;
+  readable via `fastboot oem debug readl 0x92000000`.
+
 ## Open device-test questions
 
 - Does lk2nd hand off a usable framebuffer, and at which address/stride?
@@ -136,7 +159,8 @@ open device-test question. Until a display path exists:
 
 1. **Shim loader boots a payload** (`shim/j5xnlte/`): lk2nd `fastboot boot`
    of the shim with a valid payload reaches the XNU entry point. First
-   observable: IMEM stage markers / reset delay on failure, a wedge or later
+   observable: scratch-DRAM stage markers at `0x92000000` / reset delay on
+   failure, a wedge or later
    XNU-owned output on success.
 2. **First XNU entry** (`MACHINE_CONFIG=J5XNLTE` marker patch mirroring
    a5xelte `0082`): XNU writes a J5XNLTE marker at its own entry.
@@ -153,8 +177,9 @@ open device-test question. Until a display path exists:
 ## First XNU patch plan
 
 - **J5XNLTE entry marker** (mirroring a5xelte `0082`): writes a J5XNLTE-owned
-  marker at `start_first_cpu` entry — to IMEM `0x0860065c` (lk2nd's mapped
-  `RESTART_REASON_ADDR`, readable after reboot) rather than a console, since
+  marker at `start_first_cpu` entry — to scratch DRAM `0x92000000` (lk2nd's
+  mapped scratch region, readable after warm resets; IMEM words do not
+  persist) rather than a console, since
   there is no early console. Build success, the marker and any screen output
   remain separate claims.
 - **Board target** (mirroring `0085`): `MACHINE_CONFIG=J5XNLTE` board header,

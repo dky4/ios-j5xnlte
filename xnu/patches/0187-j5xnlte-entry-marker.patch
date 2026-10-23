@@ -33,19 +33,20 @@ diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
 index 7da26d2..d8b78ea 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
-@@ -544,7 +544,17 @@ La5_entry_pixel:
+@@ -544,7 +544,21 @@ La5_entry_pixel:
  	bl	La5_draw_text
  #endif
  
 -#if defined(SWEET) && !defined(A5XELTE)
 +#if defined(J5XNLTE)
-+	/* Earliest XNU-owned marker in Qualcomm IMEM. lk2nd maps only the
-+	 * 0x08600000 IMEM base (its RESTART_REASON_ADDR is +0x65c) and reads
-+	 * that word on warm boots, so this address stays readable through
-+	 * `fastboot oem debug readl`; the word is only 4-byte aligned, so the
-+	 * marker transfers as a 32-bit store (an 8-byte store does not reach
-+	 * this address). */
-+	MOV64	x10, 0x0860065c
++	/* Earliest XNU-owned marker in lk2nd's scratch DRAM at 0x92000000
++	 * (SCRATCH_ADDR 0x90000000 + 32MB): lk2nd maps the whole 256 MB
++	 * region, its download buffer only reaches 0x90000000+16 MB with our
++	 * image, its ramoops console starts at 0x9FF80000, and DRAM survives
++	 * warm resets - the earlier IMEM marker at 0x0860065c did NOT persist
++	 * across resets (boot ROM/SBL re-initializes IMEM). The marker stays
++	 * a 32-bit store, readable via `fastboot oem debug readl 0x92000000`. */
++	MOV64	x10, 0x92000000
 +	MOV64	x11, 0x584e5531
 +	str		w11, [x10]
 +	dsb		sy
@@ -77,8 +78,8 @@ index dcdbcf6..fc03ec4 100644
 + * Qualcomm IMEM markers are the only early diagnostics on this board:
 + * lk2nd provides fastboot, not a serial console, and the MDP5+DSI
 + * framebuffer is not mapped during bootstrap. start.s stores the XNU
-+ * entry marker in IMEM; keep the console calls no-ops until the MDP5
-+ * console exists.
++ * entry marker in scratch DRAM; keep the console calls no-ops until the
++ * MDP5 console exists.
 + */
 +#include <stdint.h>
 +#include <kern/misc_protos.h>

@@ -1,21 +1,23 @@
 #!/bin/sh
-# j5xnlte device trials: the fastboot sequence with the IMEM marker words
-# read back. Run from anywhere on the machine with the device in lk2nd
+# j5xnlte device trials: the fastboot sequence with the scratch-DRAM marker
+# words read back. Run from anywhere on the machine with the device in lk2nd
 # fastboot; the script tells you what to do at every step.
 #
 #   ./shim/j5xnlte/trials.sh a        Trial A: real payload, "XNU1" marker
 #   ./shim/j5xnlte/trials.sh b        Trial B: display probe (DIAG=2) fb facts
 #   ./shim/j5xnlte/trials.sh c        Trial C: PSCI probe (DIAG=3) return value
-#   ./shim/j5xnlte/trials.sh persist  IMEM persistence across lk2nd reboot
+#   ./shim/j5xnlte/trials.sh persist  DRAM persistence across lk2nd reboot
 #
-# IMEM marker word: 0x0860065c (lk2nd's RESTART_REASON_ADDR), readable with
-# the unmodified installed lk2nd via 'fastboot oem debug readl'.
+# Marker word: 0x92000000 (lk2nd's scratch DRAM, 32 MB into SCRATCH_ADDR
+# 0x90000000), readable with the unmodified installed lk2nd via
+# 'fastboot oem debug readl'. The earlier IMEM word 0x0860065c did NOT
+# persist across resets (boot ROM/SBL re-initializes IMEM); DRAM does.
 set -eu
 cd "$(dirname "$0")/../.."
 
 IMG=shim/j5xnlte/out/j5xnlte-boot.img
 PAYLOAD=/tmp/opencode/payload-xnu-j5xnlte.bin
-MARK=0x0860065c
+MARK=0x92000000
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 need_fastboot() {
@@ -67,7 +69,7 @@ a)
 	0x4a355800) echo "Loader stage 0: the shim ran, XNU wedged BEFORE its own marker." ;;
 	0x4a355801|0x4a355802|0x4a355803|0x4a355804)
 		echo "Loader FAILED at stage ${V#0x4a35580} (see shim/j5xnlte/README.md)." ;;
-	0x00000000) echo "Word is 0: IMEM was cleared by the reset, or the write never landed." ;;
+	0x00000000) echo "Word is 0: DRAM was cleared by the reset, or the write never landed." ;;
 	*) echo "Unexpected: $V" ;;
 	esac
 	;;
@@ -79,11 +81,11 @@ b)
 	fastboot boot "$IMG"
 	poll_back "Press POWER and HOLD VOLUMEDOWN until fastboot is back (force-reboot with POWER ~10 s if it hung)." \
 		"If the phone boots ANDROID instead, the trial is lost: re-run './shim/j5xnlte/trials.sh b'."
-	echo "IMEM fb facts (5c base, 60 size, 64 width, 68 height, 6c stride, 70 format):"
-	for off in 0x0860065c 0x08600660 0x08600664 0x08600668 0x0860066c 0x08600670; do
+	echo "fb facts (00 base, 04 size, 08 width, 0c height, 10 stride, 14 format):"
+	for off in 0x92000000 0x92000004 0x92000008 0x9200000c 0x92000010 0x92000014; do
 		echo "  $off = $(readl "$off")"
 	done
-	echo "0x4a355801 at 5c = the fb node is missing (lk2nd detected no splash or the cmdline arg did not flow)."
+	echo "0x4a355801 at 0x92000000 = the fb node is missing (lk2nd detected no splash or the cmdline arg did not flow)."
 	restore_full_loader
 	;;
 c)
@@ -104,7 +106,7 @@ c)
 	;;
 persist)
 	need_fastboot
-	echo "=== IMEM persistence across lk2nd's own reboot ==="
+	echo "=== scratch-DRAM persistence across lk2nd's own reboot ==="
 	fastboot oem debug writel "$MARK" 0x4a355800
 	echo "Read back now: $(readl "$MARK") (expect 0x4a355800)"
 	echo ">>> 'fastboot reboot' runs next: lk2nd hard-resets. HOLD VOLUMEDOWN as it reboots."
@@ -113,8 +115,8 @@ persist)
 		""
 	V=$(readl "$MARK")
 	case "$V" in
-	0x4a355800) echo "IMEM SURVIVES lk2nd's hard reset - trial A's 0 reads mean the shim write never landed." ;;
-	0x00000000) echo "IMEM CLEARED by lk2nd's hard reset - that explains trial A's 0 reads." ;;
+	0x4a355800) echo "DRAM SURVIVES lk2nd's hard reset - trial A's 0 reads mean the shim write never landed." ;;
+	0x00000000) echo "DRAM CLEARED by lk2nd's hard reset - markers need yet another home." ;;
 	*) echo "Unexpected: $V" ;;
 	esac
 	;;

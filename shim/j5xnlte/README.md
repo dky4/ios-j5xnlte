@@ -62,9 +62,10 @@ entry/PS_HOLD probe instead of the full loader. Trials are always
 ## Failure observables
 
 There is no console on the J5, so failures are observable as a powerdown
-with a stage-dependent delay and an IMEM marker at `0x0860065c`
-(`0x4a355800 | stage`; lk2nd's `RESTART_REASON_ADDR`, read on warm boots
-and never written by lk2nd):
+with a stage-dependent delay and a scratch-DRAM marker at `0x92000000`
+(`0x4a355800 | stage`; 32 MB into lk2nd's `SCRATCH_ADDR 0x90000000`, which
+lk2nd maps in full — nothing scrubs the word, and DRAM survives warm
+resets):
 
 | Marker | Meaning | Powerdown delay |
 | --- | --- | --- |
@@ -80,9 +81,12 @@ phone boots back on a power press (it auto-boots while charging). PSCI
 `SYSTEM_RESET` from the TZ-milestone EL1 state wedged a dedicated probe
 (delay elapsed, then no powerdown), so it stays out of the reset path.
 Success jumps to XNU; a wedge or later XNU-owned output is then XNU
-evidence. While fastboot is alive, lk2nd's `oem debug readl 0x0860065c`
+evidence. While fastboot is alive, lk2nd's `oem debug readl 0x92000000`
 peek/poke can read the marker of a warm reset once the PMIC warm-reset path
-(SPMI) is implemented.
+(SPMI) is implemented. The earlier IMEM marker at `0x0860065c` did NOT
+persist across resets (lk2nd writel/readl work in-session, but the word
+reads 0 after a reboot — the boot ROM/SBL re-initializes IMEM), so the
+marker moved to scratch DRAM.
 
 ## Design notes
 
