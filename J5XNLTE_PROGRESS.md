@@ -635,3 +635,47 @@ change.
   → `sh shim/j5xnlte/build.sh <payload>` → user trial `a` (white band on
   the AMOLED = XNU entry reached) → `b` (DIAG=2 band) → `c` (timed PSCI
   ladder).
+
+## 2026-10-23 — CI rebuilt the kernel with the live screen draw; payload re-packed
+
+- **Commit `db619d8`** ("j5xnlte: post-reset readback is dead - in-boot
+  mailbox + live screen draw"): loader.c (mailbox stash, common delay/
+  fail_reset, DIAG=2 band draw, DIAG=3 timed ladder), patch 0187 (fb band
+  draw in start.s), trials.sh (live observables), docs rewritten.
+- **Static builds verified:** all four shim modes compile
+  (aarch64-linux-gnu-gcc, -Werror, -mgeneral-regs-only); DIAG=1 reuses
+  fail_reset, delay() is guarded out of DIAG=1. The mailbox stash and the
+  magic movz/movk pair are in the built Image (disassembled: `mov x1,
+  #0x92000000` / `mov w2, #0x5531` / `movk w2, #0x584e, lsl #16`).
+- **CI milestone DONE (live screen draw):** run `39904225615` (run_number
+  11, head `db619d8`) succeeded and produced `kernel.development.j5xnlte`
+  in the `xnu-kernel` artifact (sha256
+  `84bad32406b79e983032c83acffbb6930af3f72804fb4dab54eab8e2400ea49b`).
+  Patch 0187 applied cleanly (log line 403 "Applying patch:
+  .../0187-j5xnlte-entry-marker.patch", no skip warning for 0187; the
+  skips are the known donor a5xelte touch/GPU patches). Entry
+  `0xfffffff007423488` (unchanged), `__TEXT` `0xfffffff007004000`,
+  kernel_end `0xfffffff0080a0000`, fixups walked (0 after rewrite).
+- **Draw code verified in the kernel binary:** at kernel file off
+  `0x421104` the full sequence disassembles exactly as written —
+  `MOV64 x8, 0x92000000` (four movk), `ldr w9, [x8]` (32-bit magic),
+  `MOV64 x10, 0x584e5531`, `cmp w9, w10`, `b.ne 9f`, `ldr w11, [x8, #12]`
+  (depth), `cmp w11, #32`, `b.ne 9f`, `ldr w4, [x8, #4]` / `ldr w5, [x8,
+  #8]` (32-bit fb base/stride), `mov w12, #-1` / `mov w13, #32` / the
+  `str w12, [x4], #4` band loop.
+- **Payload re-packed from the new kernel:**
+  - `/tmp/opencode/payload-xnu-j5xnlte.bin` (16,452,416 bytes): SWEETXNU
+    v1, 10 segments, virt_base `0xfffffff006000000`, entry
+    `0xfffffff007423488`, kernel_end `0xfffffff0080a0000`,
+    phys_base/mem_size `0x88000000`/`0x78000000`; the full draw sequence
+    is contiguous in the packed __TEXT_EXEC data (payload off `0x4214f4`).
+  - `shim/j5xnlte/out/j5xnlte-boot.img` (16,494,592 bytes): full loader
+    (with the mailbox stash) + the new payload as ramdisk + the minimal
+    DTB, boot.img v0, cmdline `lk2nd.pass-simplefb`.
+- **Next:** user trials `a` (`./shim/j5xnlte/trials.sh a`): boot →
+  fastboot disappears → **white 64x32 band at the splash top-left on the
+  AMOLED = XNU reached its entry (the loader jumped AND the draw ran)**.
+  Splash unchanged = XNU wedged before the draw or the MDP stopped
+  refreshing through the jump (then trial `b` diagnoses which: the DIAG=2
+  probe draws the band itself from the parsed fb node). Then `c` (timed
+  PSCI ladder).
