@@ -61,11 +61,13 @@ entry/PS_HOLD probe instead of the full loader. Trials are always
 
 ## Failure observables
 
-There is no console on the J5, so failures are observable as a powerdown
-with a stage-dependent delay and a scratch-DRAM marker at `0x92000000`
-(`0x4a355800 | stage`; 32 MB into lk2nd's `SCRATCH_ADDR 0x90000000`, which
-lk2nd maps in full — nothing scrubs the word, and DRAM survives warm
-resets):
+There is no console on the J5, and **post-reset readback is dead**
+(device-proven 2026-10-23: IMEM and scratch DRAM are both wiped by the boot
+ROM/SBL on every reset — do not retry reads after a reset). Failures are
+observable as a powerdown with a stage-dependent delay; the in-session
+marker word at `0x92000000` (`0x4a355800 | stage`; 32 MB into lk2nd's
+`SCRATCH_ADDR 0x90000000`, which lk2nd maps in full) is only readable while
+fastboot is up:
 
 | Marker | Meaning | Powerdown delay |
 | --- | --- | --- |
@@ -80,13 +82,17 @@ PSHOLD action powers the phone off. This is device-proven and safe; the
 phone boots back on a power press (it auto-boots while charging). PSCI
 `SYSTEM_RESET` from the TZ-milestone EL1 state wedged a dedicated probe
 (delay elapsed, then no powerdown), so it stays out of the reset path.
-Success jumps to XNU; a wedge or later XNU-owned output is then XNU
-evidence. While fastboot is alive, lk2nd's `oem debug readl 0x92000000`
-peek/poke can read the marker of a warm reset once the PMIC warm-reset path
-(SPMI) is implemented. The earlier IMEM marker at `0x0860065c` did NOT
-persist across resets (lk2nd writel/readl work in-session, but the word
-reads 0 after a reboot — the boot ROM/SBL re-initializes IMEM), so the
-marker moved to scratch DRAM.
+
+Success stashes the in-boot mailbox at `0x92000000` (magic `0x584e5531`,
+fb base/stride/depth — written and consumed in ONE boot, so the reset wipe
+does not apply) and jumps to XNU, whose start.s draws a white 64x32 band at
+the splash top-left (live observable, MMU off, plain physical stores — the
+splash fb keeps refreshing from DRAM through the jump). A wedge (splash
+unchanged) or any other screen change is then XNU-owned evidence. The
+probes time their powerdowns to carry data: DIAG=3's PSCI return value
+drives the delay (0 → ~2 s, error → ~10 s), and the DIAG=2 fb probe draws
+the band itself, proving the splash-refresh assumption before trial A
+relies on it.
 
 ## Design notes
 
@@ -94,8 +100,10 @@ marker moved to scratch DRAM.
   sets `dram-base` `0x88000000`, 128 MiB above DRAM start) so lk2nd's load
   addresses (kernel `0x80000000`, DTB `0x81e00000`, ramdisk `0x82000000`)
   stay below it and never overlap the copied segments.
-- `boot_args.Video` stays zero: the J5's MDP5+DSI display is a later
-  milestone, and no lk2nd framebuffer handoff is assumed yet.
+- `boot_args.Video` comes from lk2nd's `/chosen/framebuffer` (the
+  continuous splash) when the cmdline carries `lk2nd.pass-simplefb`, and
+  the same facts go into the in-boot mailbox at `0x92000000` for start.s'
+  live screen draw. Zero if lk2nd detected no splash.
 - The payload's `phys_base`/`mem_size` come from the ADT's `dram-base`/
   `dram-size` (mkpayload.py reads them), so the ADT and this shim stay
   consistent by construction.

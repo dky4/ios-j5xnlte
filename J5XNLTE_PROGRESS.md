@@ -589,3 +589,49 @@ change.
 - **Next:** user trials `persist` (DRAM across lk2nd's reboot) → `a`
   (`0x584e5531` at `0x92000000` after force-reboot — now actually possible,
   the marker is in this kernel) → `b` (fb facts) → `c` (PSCI CPU_ON).
+
+## 2026-10-23 — post-reset readback is dead; in-boot mailbox + live screen draw
+
+- **`persist` result (scratch DRAM across lk2nd's own reboot):** the
+  `writel` round-trips in-session (`0x4a355800` at `0x92000000`), but after
+  `fastboot reboot` the word read `0xffffffff` (the phone booted straight
+  into fastboot, no Android). Combined with the IMEM result (reads `0`
+  after any warm cycle), **no marker home persists across resets** — the
+  boot ROM/SBL wipes both on every boot. User direction: do not try
+  post-reset readback; it won't work.
+- **Debug approach redesigned (committed 2026-10-23):**
+  - **In-boot mailbox at fixed scratch `0x92000000`**: same-boot DRAM is
+    fine (only the reset wipes it). The full loader stashes it inside the
+    existing `fdt_chosen_fb` Video fill: +0 magic `0x584e5531` ("XNU1"),
+    +4 fb physical base, +8 rowBytes/stride, +12 depth.
+  - **Live screen draw in start.s** (patch `0187` rewritten): with the MMU
+    still off, XNU checks the mailbox magic and depth==32, then draws a
+    white 64x32 band at the splash top-left with plain physical stores.
+    The splash keeps refreshing from DRAM through the jump (MDP set up by
+    the stock bootchain, nothing reconfigures it) — the band on the AMOLED
+    is the observable that XNU entered. All mailbox loads are 32-bit
+    (`ldr w…`) because the loader stores u32s; a 64-bit load at +4 would
+    grab the stride into the upper half. Register clobbers (x4, x5,
+    x8–x15) verified against upstream xnu-8796.141.3 start.s: x20–x26 are
+    live (boot args, bases, page tables) but everything the draw touches
+    is set up fresh later; the adjacent a5xelte code (0089) clobbers
+    x10–x15 at the same spot.
+  - **Timed ladders for the probes**: DIAG=3's PSCI return value drives
+    the powerdown delay (0 → ~2 s, error → ~10 s) — the delay IS the
+    return value. The DIAG=2 fb probe draws the band itself, proving the
+    splash-refresh assumption before trial A relies on it.
+  - **trials.sh** rewritten to the live observables: trial `a` = watch the
+    AMOLED (no readl); trial `b` = watch the band; trial `c` = count the
+    poweroff delay; `persist` removed. `readl` works in-session only
+    (probes keep their in-session words for it).
+- **Patch 0187 rewritten again (fb band draw):** hunk header `+544,45`
+  verified with the hunk-count script; hunk counts
+  7/7, 7/7, 8/8, 7/45, 8/8, 6/39 all consistent. (The corrupt-patch
+  failure mode is a stale count → `git apply` rejects the WHOLE patch →
+  build.sh silently skips it.)
+- **Next:** static builds (loader.c changed in all four modes) → commit +
+  push → CI rebuilds the kernel with the new patch 0187 → re-pack the
+  payload from the new kernel (`python3 tools/mkpayload.py KERNEL ADT OUT`)
+  → `sh shim/j5xnlte/build.sh <payload>` → user trial `a` (white band on
+  the AMOLED = XNU entry reached) → `b` (DIAG=2 band) → `c` (timed PSCI
+  ladder).

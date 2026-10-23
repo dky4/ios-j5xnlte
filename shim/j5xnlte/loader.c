@@ -10,22 +10,21 @@
  * pages behind the kernel, and jump to the entry point with the MMU and
  * caches off, x0 = boot_args (physical).
  *
- * There is no console: a failure writes its stage number to DRAM at
- * 0x92000000 (0x4a355800 | stage, "J5XN" + stage), waits stage * 5 seconds
- * and resets; the reboot delay is the first observable. The marker word is
- * 32 MB into lk2nd's 256 MB scratch region (SCRATCH_ADDR 0x90000000,
- * target/msm8916/rules.mk): lk2nd maps the whole region and its download
- * buffer only reaches 0x90000000+16 MB with our image, and lk2nd's ramoops
- * (scratch + 256M - 512K) starts at 0x9FF80000, so nothing scrubs it. DRAM
- * survives warm resets; the earlier IMEM marker at 0x0860065c did NOT
- * persist across resets (lk2nd writel/readl work in-session, but the word
- * is 0 after a reboot - the boot ROM/SBL likely re-initializes IMEM). See
- * docs/j5xnlte-bringup.md.
+ * There is no console, and post-reset readback is dead: IMEM 0x0860065c
+ * reads 0 after any warm cycle and scratch DRAM 0x92000000 reads 0xffffffff
+ * after lk2nd's own reboot — the boot ROM/SBL wipes both on every reset
+ * (device-proven 2026-10-23). 0x92000000 (32 MB into lk2nd's 256 MB scratch
+ * region, SCRATCH_ADDR 0x90000000, target/msm8916/rules.mk) is still the
+ * in-boot mailbox: the full loader stashes the splash-fb facts there in the
+ * SAME boot for start.s' live screen draw, and the probes keep their
+ * in-session words for lk2nd's readl while fastboot is up. Observables
+ * that need no readback: the powerdown delay (stage * 5 s, probe-dependent)
+ * and what the AMOLED shows. See docs/j5xnlte-bringup.md.
  */
 #include <stdint.h>
 #include "../fdt.h"
 
-#define DRAM_MARK		0x92000000UL	/* scratch DRAM: lk2nd-mapped, nothing scrubs it */
+#define DRAM_MARK		0x92000000UL	/* in-boot mailbox: lk2nd-mapped, wiped by resets */
 #define RAM_BASE		0x80000000UL	/* DRAM start */
 #define RAM_END			0x100000000UL	/* 2 GiB */
 #define PAGE_SIZE		4096UL
@@ -97,7 +96,9 @@ static int magic_ok(const char *m)
 			return 0;
 	return 1;
 }
+#endif /* J5XNLTE_FULL_LOADER */
 
+#if !defined(J5XNLTE_DIAG)
 /* CNTFRQ may be 0 on this firmware (the a5xelte probe measured 0), so the
  * fallback is a crude DRAM-fetch loop; the delay is approximate by design. */
 static void delay(unsigned s)
@@ -117,15 +118,15 @@ static void delay(unsigned s)
 	while (n--)
 		__asm__ volatile("nop");
 }
+#endif /* !J5XNLTE_DIAG */
 
 /* Reset: drop PS_HOLD (0x4ab000). The PM8916 default PSHOLD action powers
  * the phone off; this is device-proven (DIAG=1 entry probe) and needs no
  * timers or PSCI. PSCI SYSTEM_RESET from the TZ-milestone EL1 state wedged
  * a dedicated probe (stage markers + delay elapsed, then no powerdown), so
- * it stays out of the reset path. lk2nd itself resets through the PMIC
- * PSHOLD warm-reset path, which needs SPMI (pm8x41_reset_configure); a
- * warm reset would keep the scratch-DRAM marker readable via lk2nd's
- * `fastboot oem debug readl 0x92000000` and is later work if needed. */
+ * it stays out of the reset path. lk2nd's own `fastboot reboot` also goes
+ * through a hard reset that wipes scratch DRAM (device-proven 2026-10-23),
+ * so nothing survives into the next boot. */
 static void __attribute__((noreturn)) fail_reset(void)
 {
 	*(volatile uint32_t *)0x004ab000UL = 0;
@@ -133,13 +134,12 @@ static void __attribute__((noreturn)) fail_reset(void)
 	for (;;)
 		__asm__ volatile("wfe");
 }
-#endif /* !J5XNLTE_FULL_LOADER */
 
 #ifdef J5XNLTE_FULL_LOADER
 static void __attribute__((noreturn)) fail(int stage)
 {
-	/* DRAM keeps the marker across the warm reset; the stage number is
-	 * observable as the reboot delay (stage * 5 s). */
+	/* The stage is observable as the powerdown delay (stage * 5 s);
+	 * the word below is in-session only (wiped by the reset). */
 	*(volatile uint32_t *)DRAM_MARK = 0x4a355800u | (uint32_t)stage;
 	__asm__ volatile("dsb sy" ::: "memory");
 	delay(stage * 5);
@@ -163,22 +163,21 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 	*(volatile uint32_t *)DRAM_MARK = 0x4a355800u | 1u;
 	__asm__ volatile("dsb sy" ::: "memory");
 	/* MPM2_MPM_PS_HOLD (target/msm8916 iomap): low = PMIC powerdown. */
-	*(volatile uint32_t *)0x004ab000UL = 0;
-	__asm__ volatile("dsb sy" ::: "memory");
-	for (;;)
-		__asm__ volatile("wfe");
+	fail_reset();
 }
 #elif defined(J5XNLTE_DIAG_FB)
 /*
  * Display probe (DIAG=2): lk2nd.pass-simplefb publishes the framebuffer as
  * /chosen/framebuffer@<base> (compatible "simple-framebuffer", boot_type
- * ARM64 only — BOOT_DOWNSTREAM/BOOT_LK2ND skip); dump the display facts
- * into scratch-DRAM words and drop PS_HOLD. Word layout at 0x92000000,
- * all readable per-word via `fastboot oem debug readl`:
- *   0x92000000: fb base, +4: fb size, +8: width, +12: height,
- *   +16: stride, +20: format (first 4 chars as ASCII).
- * 0x4a355801 at 0x92000000 = the node is missing (lk2nd detected no
- * continuous splash, or the cmdline arg did not flow).
+ * ARM64 only — BOOT_DOWNSTREAM/BOOT_LK2ND skip). Post-reset readback is
+ * dead (scratch DRAM is wiped by the boot ROM/SBL on every reset), so the
+ * observable is live: when the node exists in the 32bpp x8r8g8b8 format,
+ * draw a white 64x32 band at the fb top-left — a band on the AMOLED says
+ * the node parsed and the MDP keeps refreshing from DRAM (the assumption
+ * trial A relies on). The probe holds it ~10 s, then drops PS_HOLD.
+ * 0x92000000 keeps the in-session facts (00 base, +4 size, +8 width,
+ * +12 height, +16 stride, +20 format) for lk2nd's readl while fastboot
+ * is up; 0x4a355801 there = the node is missing.
  */
 void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 {
@@ -195,26 +194,37 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 		*(volatile uint32_t *)(DRAM_MARK + 12) = height;
 		*(volatile uint32_t *)(DRAM_MARK + 16) = stride;
 		*(volatile uint32_t *)(DRAM_MARK + 20) = fmt4;
+		if (fmt4 == 0x78387238u /* "x8r8" */) {
+			volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)base;
+			for (uint32_t row = 0; row < 32; ++row) {
+				volatile uint32_t *px =
+				    fb + (uint64_t)row * (stride / 4);
+				for (uint32_t col = 0; col < 64; ++col)
+					px[col] = 0xffffffffu;
+			}
+			__asm__ volatile("dsb sy" ::: "memory");
+		}
 	} else {
 		*(volatile uint32_t *)DRAM_MARK = 0x4a355801u;
 	}
 	__asm__ volatile("dsb sy" ::: "memory");
 
+	/* Hold the band on screen, then power down. */
+	delay(10);
 	/* MPM2_MPM_PS_HOLD (target/msm8916 iomap): low = PMIC powerdown. */
-	*(volatile uint32_t *)0x004ab000UL = 0;
-	__asm__ volatile("dsb sy" ::: "memory");
-	for (;;)
-		__asm__ volatile("wfe");
+	fail_reset();
 }
 #elif defined(J5XNLTE_DIAG_SMC)
 /*
  * PSCI probe (DIAG=3): CPU_ON via smc #0 alone, without the hvc fallback
  * that wedged the earlier SYSTEM_RESET pair in the TZ-milestone EL1 state.
- * Target core 1, entry = a wfe loop, context 0. DRAM word layout at
- * 0x92000000: return value (0 = PSCI success, negative = PSCI error
- * code, -1 = NOT_SUPPORTED), 0x4a355800 = the probe reached (written
- * before the smc; that value with a hang means the smc itself hung).
- * PS_HOLD powerdown follows the smc.
+ * Target core 1, entry = a wfe loop, context 0. Post-reset readback is
+ * dead (scratch DRAM is wiped by the boot ROM/SBL on every reset), so the
+ * return value is observable as the powerdown delay: 0 (PSCI success)
+ * powers off ~2 s after the boot, any PSCI error code ~10 s. 0x92000000
+ * keeps the in-session words (0x4a355800 = the probe reached, written
+ * before the smc; then the return value) for lk2nd's readl while
+ * fastboot is up.
  */
 static void psci_loop(void)
 {
@@ -237,11 +247,10 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 	*mark = (volatile uint32_t)(uint32_t)x0;
 	__asm__ volatile("dsb sy" ::: "memory");
 
+	/* Timed ladder: the delay IS the return value (readback is dead). */
+	delay(x0 ? 10 : 2);
 	/* MPM2_MPM_PS_HOLD (target/msm8916 iomap): low = PMIC powerdown. */
-	*(volatile uint32_t *)0x004ab000UL = 0;
-	__asm__ volatile("dsb sy" ::: "memory");
-	for (;;)
-		__asm__ volatile("wfe");
+	fail_reset();
 }
 #else
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
@@ -329,6 +338,17 @@ void __attribute__((noreturn)) shim_main(uintptr_t dtb)
 			ba->Video.v_height = fb_h;
 			ba->Video.v_depth = fmt4 == 0x78387238u /* "x8r8" */ ? 32 :
 					     fmt4 == 0x72356736u /* "r5g6" */ ? 16 : 24;
+			/* In-boot mailbox for start.s' live screen draw (MMU off,
+			 * plain physical stores): the splash fb keeps refreshing
+			 * from DRAM through the jump, so XNU draws on the AMOLED
+			 * instead of reading back a marker after a reset (IMEM and
+			 * scratch DRAM are both wiped by the boot ROM/SBL on every
+			 * reset - device-proven 2026-10-23; only the readback is
+			 * dead: this mailbox is written and consumed in ONE boot). */
+			*(volatile uint32_t *)DRAM_MARK = 0x584e5531u;
+			*(volatile uint32_t *)(DRAM_MARK + 4) = fb_base;
+			*(volatile uint32_t *)(DRAM_MARK + 8) = fb_stride;
+			*(volatile uint32_t *)(DRAM_MARK + 12) = ba->Video.v_depth;
 		}
 	}
 	ba->deviceTreeP = p->virt_base + (adt_pa - p->phys_base);	/* VA: xnu reads it with the MMU on */

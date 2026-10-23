@@ -33,23 +33,47 @@ diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
 index 7da26d2..d8b78ea 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
-@@ -544,7 +544,21 @@ La5_entry_pixel:
+@@ -544,7 +544,45 @@ La5_entry_pixel:
  	bl	La5_draw_text
  #endif
  
 -#if defined(SWEET) && !defined(A5XELTE)
 +#if defined(J5XNLTE)
-+	/* Earliest XNU-owned marker in lk2nd's scratch DRAM at 0x92000000
-+	 * (SCRATCH_ADDR 0x90000000 + 32MB): lk2nd maps the whole 256 MB
-+	 * region, its download buffer only reaches 0x90000000+16 MB with our
-+	 * image, its ramoops console starts at 0x9FF80000, and DRAM survives
-+	 * warm resets - the earlier IMEM marker at 0x0860065c did NOT persist
-+	 * across resets (boot ROM/SBL re-initializes IMEM). The marker stays
-+	 * a 32-bit store, readable via `fastboot oem debug readl 0x92000000`. */
-+	MOV64	x10, 0x92000000
-+	MOV64	x11, 0x584e5531
-+	str		w11, [x10]
++	/* Live entry observable on the AMOLED: lk2nd's splash framebuffer
++	 * keeps refreshing from DRAM through the jump (MDP set up by the
++	 * stock bootchain, nothing reconfigures it), so XNU can draw with
++	 * plain physical stores while the MMU is still off - no MDP5
++	 * registers, no console, and no post-reset marker readback (IMEM
++	 * AND scratch DRAM are both wiped by the boot ROM/SBL on every
++	 * reset, device-proven 2026-10-23; only the readback is dead: the
++	 * mailbox below is written and consumed in ONE boot). The loader
++	 * stashes it at scratch DRAM 0x92000000: +0 magic "XNU1"
++	 * 0x584e5531, +4 fb physical base, +8 rowBytes, +12 depth. Draw a
++	 * white 64x32 band at the top-left when the mailbox is valid and
++	 * the fb is 32bpp; the band on the screen says XNU entered. */
++	MOV64	x8, 0x92000000
++	ldr		w9, [x8]
++	MOV64	x10, 0x584e5531
++	cmp		w9, w10
++	b.ne	9f
++	ldr		w11, [x8, #12]
++	cmp		w11, #32
++	b.ne	9f
++	ldr		w4, [x8, #4]
++	ldr		w5, [x8, #8]
++	mov		w12, #-1
++	mov		w13, #32
++1:	mov		w14, #64
++2:	str		w12, [x4], #4
++	subs	w14, w14, #1
++	b.ne	2b
++	MOV64	x15, 256
++	add		x4, x4, x5
++	sub		x4, x4, x15
 +	dsb		sy
++	subs	w13, w13, #1
++	b.ne	1b
++9:
 +#endif
 +
 +#if defined(SWEET) && !defined(A5XELTE) && !defined(J5XNLTE)
@@ -69,16 +93,17 @@ diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
 index dcdbcf6..fc03ec4 100644
 --- a/osfmk/arm64/sweet_early.c
 +++ b/osfmk/arm64/sweet_early.c
-@@ -111,6 +111,39 @@ sweet_early_panic(const char *fmt, va_list *args)
+@@ -111,6 +111,40 @@ sweet_early_panic(const char *fmt, va_list *args)
  
  void sweet_early_relocate(uint64_t base) { (void)base; }
  void sweet_early_disable(void) { a5_active = 0; }
 +#elif defined(J5XNLTE)
 +/*
-+ * Qualcomm IMEM markers are the only early diagnostics on this board:
-+ * lk2nd provides fastboot, not a serial console, and the MDP5+DSI
-+ * framebuffer is not mapped during bootstrap. start.s stores the XNU
-+ * entry marker in scratch DRAM; keep the console calls no-ops until the
++ * The early diagnostic on this board is live: start.s draws a white band
++ * on the splash framebuffer from the loader's in-boot mailbox at scratch
++ * DRAM 0x92000000 (the splash keeps refreshing from DRAM through the
++ * jump; post-reset marker readback is device-proven dead). lk2nd provides
++ * fastboot, not a serial console; keep the console calls no-ops until the
 + * MDP5 console exists.
 + */
 +#include <stdint.h>

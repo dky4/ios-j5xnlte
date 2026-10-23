@@ -19,9 +19,9 @@ device; every trial boots with lk2nd's Android fastboot.
 | GPU | Adreno 306 (a2xx class, later milestone) |
 | Storage | eMMC on SDHCI `sdhc_1` `@0x07824900` (core) / `@0x07824000` (host), bus-width 8, `qcom,sdhci-msm-v4` |
 | USB | `@0x078d9000`, `qcom,ci-hdrc` peripheral + `qcom,ehci-host` |
-| IMEM | lk2nd maps only `@0x08600000` (1 MB; `RESTART_REASON_ADDR` `0x0860065c`, read on warm boots, never written — reboot modes go to the PMIC spare). The downstream dts `qcom,msm-imem@0x146bf000` (`0x146bf65c`) is real but **not mapped by lk2nd**: lk2nd reads of it data-abort. **IMEM words do NOT persist across resets** (lk2nd writel/readl work in-session; the word is 0 after any reboot — the boot ROM/SBL re-initializes IMEM). Markers live in scratch DRAM instead (see the memory map below) |
+| IMEM | lk2nd maps only `@0x08600000` (1 MB; `RESTART_REASON_ADDR` `0x0860065c`, read on warm boots, never written — reboot modes go to the PMIC spare). The downstream dts `qcom,msm-imem@0x146bf000` (`0x146bf65c`) is real but **not mapped by lk2nd**: lk2nd reads of it data-abort. **Post-reset readback is dead**: IMEM words read `0` after any warm cycle (writel/readl work in-session only — the boot ROM/SBL re-initializes IMEM on every boot). No marker home persists across resets; handoff is in-boot only |
 | PSHOLD | `@0x004ab000` |
-| Scratch DRAM | lk2nd maps `SCRATCH_ADDR` `0x90000000` for the full 256 MB and uses it as the fastboot download buffer; its ramoops (scratch + 256M − 512K) starts at `0x9FF80000`. `0x92000000` (32 MB in; past our 16 MB download image) is the marker home: lk2nd-mapped, untouched by our boots, nothing scrubs it, and **DRAM survives warm resets** |
+| Scratch DRAM | lk2nd maps `SCRATCH_ADDR` `0x90000000` for the full 256 MB and uses it as the fastboot download buffer; its ramoops (scratch + 256M − 512K) starts at `0x9FF80000`. `0x92000000` (32 MB in; past our 16 MB download image) is the **in-boot mailbox**: the loader stashes the splash-fb facts there in the SAME boot for start.s' live screen draw. **It does not survive resets** (device-proven 2026-10-23: reads `0xffffffff` after lk2nd's own `fastboot reboot`) — only same-boot reads are valid |
 
 Values marked "not yet measured" must be confirmed from EL1 on the phone before
 they are treated as device facts; record those confirmations in
@@ -67,28 +67,26 @@ overlap lk2nd's own memory: lk2nd runs near the top of RAM (`MEMBASE`
 
 ### Diagnostics without a console
 
-The J5 shim has no console: whether lk2nd leaves a usable framebuffer is an
-open device-test question. Until a display path exists:
+The J5 shim has no console. **Post-reset readback is dead** (device-proven
+2026-10-23: IMEM and scratch DRAM are both wiped by the boot ROM/SBL on
+every reset — do not retry reads after a reset). The observables are live:
 
 - **Loader failure** (before the jump): the shim writes the stage number to
   scratch DRAM at `0x92000000` (`0x4a355800 | stage`, "J5XN" + stage;
-  lk2nd's mapped 256 MB scratch region, nothing scrubs it, DRAM survives
-  warm resets), waits
-  `stage * 5` seconds and drops `PS_HOLD` (`0x4ab000`) — the PM8916 default
-  PSHOLD action powers the phone off. The observable is the powerdown
-  delay: ~5 s per failure stage (see `shim/j5xnlte/README.md` for the stage
-  table); the phone boots back on a power press (it auto-boots while
-  charging).
-- **Loader success**: the shim jumps to XNU. A wedge, a powerdown without a
-  delay, or anything else on screen is then XNU-owned evidence.
+  in-session only), waits `stage * 5` seconds and drops `PS_HOLD`
+  (`0x4ab000`) — the PM8916 default PSHOLD action powers the phone off. The
+  observable is the powerdown delay: ~5 s per failure stage (see
+  `shim/j5xnlte/README.md` for the stage table); the phone boots back on a
+  power press (it auto-boots while charging).
+- **Loader success**: the shim stashes the splash-fb mailbox at
+  `0x92000000` in the SAME boot (magic `0x584e5531`, fb base/stride/depth)
+  and jumps to XNU, whose start.s draws a white 64x32 band at the splash
+  top-left — the band on the AMOLED says XNU entered. A wedge (splash
+  unchanged) or any other screen change is then XNU-owned evidence.
+- **In-session reads** (only while fastboot is up, never after a reset):
+  `fastboot oem debug readl 0x92000000` reads the probe's in-session words.
 - **lk2nd's own log** (not XNU's): `fastboot oem log && fastboot get_staged
   OUT`.
-- **lk2nd peek/poke** (while fastboot is alive): `fastboot oem debug readl
-  0x92000000` reads the scratch-DRAM marker word; the earlier IMEM word
-  `0x0860065c` is writable/readable in-session but does NOT survive a
-  reboot, so markers live in scratch DRAM. Once the PMIC warm-reset path
-  (SPMI, `pm8x41_reset_configure(PON_PSHOLD_WARM_RESET)`) is implemented, a
-  warm reset keeps the marker readable.
 - Later options once XNU runs: a screen console from the MDP5 bring-up, then
   a persistent-log partition or USB.
 
@@ -119,7 +117,7 @@ open device-test question. Until a display path exists:
 - Timer reads work at EL1: the full shim's 10 s `CNTFRQ`/`CNTPCT` delay
   was accurate (no fallback needed).
 
-### Device findings (2026-10-23, marker persistence)
+### Device findings (2026-10-23, readback is dead — new debug approach)
 
 - `fastboot oem debug readl 0x0860065c` reads OKAY with the unmodified
   installed lk2nd (the readl-reboot bug is fixed: device-verified, no more
@@ -131,17 +129,38 @@ open device-test question. Until a display path exists:
   between) and lk2nd's own `fastboot reboot`. The boot ROM/SBL likely
   re-initializes IMEM on every boot; restart-reason persistence relies on
   the PMIC spare (`USE_PON_REBOOT_REG=1`), not IMEM.
-- Replacement home: **scratch DRAM `0x92000000`** — 32 MB into lk2nd's
-  `SCRATCH_ADDR 0x90000000` (mapped for the full 256 MB). lk2nd uses it as
-  the fastboot download buffer, but our 16 MB image only reaches
-  `0x90000000+16 MB`; lk2nd's ramoops starts at `0x9FF80000`; nothing else
-  writes the word. DRAM survives warm resets (the ramoops design relies on
-  it). All markers (shim stage codes, XNU `0x584e5531`) moved there;
-  readable via `fastboot oem debug readl 0x92000000`.
+- **Scratch DRAM `0x92000000` does NOT persist either**: a `writel`
+  round-trips in-session (`0x4a355800`), but after lk2nd's own
+  `fastboot reboot` the word read `0xffffffff` (the phone booted straight
+  into fastboot, no Android). User direction: the boot ROM wipes it — do
+  not try post-reset readback; it won't work.
+- **New debug approach — live observables only** (committed 2026-10-23):
+  1. **In-boot mailbox** at fixed scratch `0x92000000`: the full loader
+     stashes it in the SAME boot (same-boot DRAM is fine; only the reset
+     wipes it): +0 magic `0x584e5531` ("XNU1"), +4 fb physical base,
+     +8 rowBytes/stride, +12 depth. Written inside the existing
+     `fdt_chosen_fb` Video fill.
+  2. **Live screen draw in start.s** (patch `0187`): with the MMU still
+     off, XNU reads the mailbox (32-bit `ldr w…` — the loader stores u32s)
+     and draws a white 64x32 band at the splash top-left (only when the
+     mailbox is valid and depth == 32). The splash framebuffer keeps
+     refreshing from DRAM through the jump (MDP set up by the stock
+     bootchain, nothing reconfigures it) — the band on the AMOLED is the
+     observable that XNU entered. No MDP5 registers, no console, no
+     readback.
+  3. **Timed ladders** for the probes (DIAG=3): the PSCI return value
+     drives the powerdown delay (0 → ~2 s, error → ~10 s). The DIAG=2 fb
+     probe draws the band itself, proving the splash-refresh assumption
+     before trial A relies on it.
+- `readl` still works **in-session** (while fastboot is up) — the probes
+  keep their in-session facts at `0x92000000`; nothing is read after a
+  reset.
 
 ## Open device-test questions
 
 - Does lk2nd hand off a usable framebuffer, and at which address/stride?
+  The loader publishes it in the in-boot mailbox at `0x92000000`; trial A
+  (white band in start.s) and trial B (DIAG=2 band) answer it live.
 - Virtual timer INTID: 20 expected from the DT (sm7150 uses 19); measure from
   EL1 before relying on it.
 - `CNTFRQ_EL0` value (19.2 MHz expected from the DT; the shim's delay worked
@@ -158,12 +177,13 @@ open device-test question. Until a display path exists:
 ## Milestone ladder
 
 1. **Shim loader boots a payload** (`shim/j5xnlte/`): lk2nd `fastboot boot`
-   of the shim with a valid payload reaches the XNU entry point. First
-   observable: scratch-DRAM stage markers at `0x92000000` / reset delay on
-   failure, a wedge or later
-   XNU-owned output on success.
-2. **First XNU entry** (`MACHINE_CONFIG=J5XNLTE` marker patch mirroring
-   a5xelte `0082`): XNU writes a J5XNLTE marker at its own entry.
+   of the shim with a valid payload reaches the XNU entry point. Observables:
+   the powerdown delay on failure, and on success the loader's in-boot fb
+   mailbox plus whatever XNU draws on the splash.
+2. **First XNU entry** (`MACHINE_CONFIG=J5XNLTE`, patch `0187`): XNU reads
+   the loader's in-boot mailbox at `0x92000000` and draws a white 64x32
+   band at the splash top-left — the band on the AMOLED is the observable
+   (no post-reset readback; see the 2026-10-23 findings).
 3. **4 KiB MMU + board target** (mirroring `0084`/`0085`): dedicated
    `J5XNLTE` board header, ADT identity, 39-bit kernel VA.
 4. **Interrupts and timer** (mirroring `0086`/`0099` with virtual-timer-intid
@@ -176,12 +196,13 @@ open device-test question. Until a display path exists:
 
 ## First XNU patch plan
 
-- **J5XNLTE entry marker** (mirroring a5xelte `0082`): writes a J5XNLTE-owned
-  marker at `start_first_cpu` entry — to scratch DRAM `0x92000000` (lk2nd's
-  mapped scratch region, readable after warm resets; IMEM words do not
-  persist) rather than a console, since
-  there is no early console. Build success, the marker and any screen output
-  remain separate claims.
+- **J5XNLTE entry observable** (patch `0187`, mirroring a5xelte `0082`):
+  with the MMU still off, XNU reads the loader's in-boot mailbox at scratch
+  DRAM `0x92000000` (magic `0x584e5531`, fb base/stride/depth — written in
+  the SAME boot, so the reset wipe does not apply) and draws a white 64x32
+  band at the splash top-left, rather than a console (there is no early
+  console) or a marker readback (device-proven dead 2026-10-23). Build
+  success, the mailbox and any screen output remain separate claims.
 - **Board target** (mirroring `0085`): `MACHINE_CONFIG=J5XNLTE` board header,
   `samsung,j5xnlte` + `qcom,msm8916` + `AppleARM` ADT identity.
 - **GICv2 platform and timer** (mirroring `0086`/`0099`): GICD `0x0b000000` /
