@@ -549,3 +549,43 @@ change.
 - **Next:** CI re-run → re-pack payload → user trials `persist` (DRAM
   across lk2nd's reboot) then `a` (`0x584e5531` at `0x92000000`), then `b`
   (fb facts) and `c` (PSCI CPU_ON).
+
+## 2026-10-23 — MILESTONE: CI rebuilt the kernel with the (repaired) marker patch; payload re-packed
+
+- **CI milestone DONE (DRAM-marker move):** run 39900230176 (head `6648115`)
+  succeeded and produced `kernel.development.j5xnlte` in the `xnu-kernel`
+  artifact (17,035,240 bytes, sha256
+  `22cf0ed549d8703bb4cb9a2a6088dc46c2af09dcd6a93ff6a1b977048886eaab`),
+  Mach-O 0xfeedfacf, cputype 0x100000c (arm64), `__TEXT` at
+  `0xfffffff007004000`, LC_UNIXTHREAD entry `0xfffffff007423488`,
+  kernel_end `0xfffffff00809efe8` (mkpayload page-aligns to
+  `0xfffffff0080a4000`), 10 segments, LC_DYLD_CHAINED_FIXUPS walked by
+  mkpayload (fixups=0 after rewrite).
+- **Patch 0187 verified in the kernel binary:** `__TEXT_EXEC` at
+  `0xfffffff007425104..11c` holds the marker sequence
+  (`MOV64 x10, 0x92000000` / `MOV64 x11, 0x584e5531` /
+  `str w11, [x10]` / `dsb sy`), found by instruction-pattern scan.
+- **MAJOR re-framing — patch 0187 was corrupt before `6648115`:** the
+  d128e08 CI log (run 39847270182, line 808) shows
+  `[warning] Skipping patch 0187-j5xnlte-entry-marker.patch ... error:
+  corrupt patch at line 58`. The stale hunk header (`+544,17`, actual 20
+  new lines) made `git apply` reject the whole patch, and build.sh skips
+  failed patches with a warning only — so **the d128e08 kernel had NO
+  "XNU1" marker at all** (kernel scan: zero `0x584e5531` immediates, zero
+  `str w11,[x10]+dsb` sequences). The earlier jump-success trials were
+  real (patch 0186 board target + 0188-0193 applied fine, and the loader
+  jumped), but trial A could never have read `0x584e5531` — the marker
+  code was not in that kernel. The hunk-count fix in `6648115` repaired
+  the patch; the new run applies it cleanly (log line 833, no skip).
+- **Payload + boot image re-packed from the new kernel:**
+  - `/tmp/opencode/payload-xnu-j5xnlte.bin` (16,452,416 bytes): SWEETXNU
+    v1, 10 segments, virt_base `0xfffffff006000000`, entry
+    `0xfffffff007423488`, kernel_end `0xfffffff0080a4000`,
+    phys_base/mem_size `0x88000000`/`0x78000000`; marker sequence verified
+    in the packed __TEXT_EXEC data (payload off `0x42150c`).
+  - `shim/j5xnlte/out/j5xnlte-boot.img` (16,494,592 bytes): full loader +
+    the new payload as ramdisk + the minimal DTB, boot.img v0, cmdline
+    `lk2nd.pass-simplefb`.
+- **Next:** user trials `persist` (DRAM across lk2nd's reboot) → `a`
+  (`0x584e5531` at `0x92000000` after force-reboot — now actually possible,
+  the marker is in this kernel) → `b` (fb facts) → `c` (PSCI CPU_ON).
